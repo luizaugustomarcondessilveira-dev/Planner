@@ -17,8 +17,21 @@ import { AlarmSettingsModal } from './components/modals/AlarmSettingsModal';
 import { KidsManagerModal } from './components/modals/KidsManagerModal';
 import { AuthWelcomeView } from './components/auth/AuthWelcomeView';
 import { PrivacyConsentModal } from './components/auth/PrivacyConsentModal';
+import { CloudMigrationModal } from './components/modals/CloudMigrationModal';
 import { AALogo } from './components/AALogo';
 import { supabase, isSupabaseConfigured } from './lib/supabase';
+import {
+  loadCloudState,
+  inspectLocalData,
+  migrateLocalDataToCloud,
+  clearAllLocalAtelierData,
+  enqueueSyncOperation,
+  flushOfflineQueue,
+  LocalDataSummary,
+  UserSettingsData,
+  CloudItemRow,
+} from './lib/cloudSync';
+import { generateUUID, ensureUUID } from './utils/uuid';
 
 import {
   AppTab,
@@ -318,6 +331,16 @@ export function App() {
   const [syncState, setSyncState] = useState<SyncState>(() =>
     typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'sincronizado'
   );
+
+  // Cloud migration & Realtime sync state and refs
+  const [isMigrationModalOpen, setIsMigrationModalOpen] = useState<boolean>(false);
+  const [localSummary, setLocalSummary] = useState<LocalDataSummary>(() => inspectLocalData());
+  const isCloudLoadedRef = useRef<boolean>(false);
+  const isSyncingRef = useRef<boolean>(false);
+  const lastSettingsSnapshotRef = useRef<string>('');
+  const lastItemsSnapshotRef = useRef<Record<string, string>>({});
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const realtimeChannelRef = useRef<any>(null);
 
   // Selected Date for HojeView navigation
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
@@ -719,6 +742,68 @@ export function App() {
             setAuthErrorMessage(null);
             setSyncState('sincronizado');
           }
+
+          // 2. Load cloud data as the single source of truth
+          try {
+            const cloud = await loadCloudState(user.id);
+            if (cloud.hasCloudData) {
+              if (cloud.settings) {
+                if (cloud.settings.appTitle) setAppTitle(cloud.settings.appTitle);
+                if (typeof cloud.settings.isDarkMode === 'boolean') setIsDarkMode(cloud.settings.isDarkMode);
+                if (typeof cloud.settings.useUserPhotoAsLogo === 'boolean') setUseUserPhotoAsLogo(cloud.settings.useUserPhotoAsLogo);
+                if (cloud.settings.alarmConfig) setAlarmConfig(cloud.settings.alarmConfig as AgendaAlarmConfig);
+                if (cloud.settings.hydrationConfig) setHydrationConfig(cloud.settings.hydrationConfig);
+                if (cloud.settings.images) setImages(cloud.settings.images);
+                if (cloud.settings.userDefaultRoteiro) setUserDefaultRoteiro(cloud.settings.userDefaultRoteiro);
+                if (typeof cloud.settings.autoApplyDefaultRoutine === 'boolean') {
+                  setAutoApplyDefaultRoutine(cloud.settings.autoApplyDefaultRoutine);
+                }
+                if (cloud.settings.meal) setMeal(cloud.settings.meal);
+                lastSettingsSnapshotRef.current = JSON.stringify(cloud.settings);
+              }
+
+              if (cloud.items) {
+                setJournalEntries(cloud.items.journal);
+                setDesabafos(cloud.items.desabafos);
+                setGoals(cloud.items.goals);
+                setNotices(cloud.items.notices);
+                setEvents(cloud.items.events);
+                setPeople(cloud.items.people.filter((p) => p.id !== 'me' && p.role !== 'primary'));
+                setDailyRoteiros(cloud.items.roteiros);
+                setDailyCupsDrank(cloud.items.dailyCups);
+                if (cloud.items.study) setStudyData(cloud.items.study);
+
+                const snapshotMap: Record<string, string> = {};
+                for (const j of cloud.items.journal) snapshotMap[j.id] = JSON.stringify(j);
+                for (const d of cloud.items.desabafos) snapshotMap[d.id] = JSON.stringify(d);
+                for (const g of cloud.items.goals) snapshotMap[g.id] = JSON.stringify(g);
+                for (const n of cloud.items.notices) snapshotMap[n.id] = JSON.stringify(n);
+                for (const e of cloud.items.events) snapshotMap[e.id] = JSON.stringify(e);
+                for (const p of cloud.items.people) snapshotMap[p.id] = JSON.stringify(p);
+                for (const [dateKey, items] of Object.entries(cloud.items.roteiros)) {
+                  snapshotMap[`roteiro_${dateKey}`] = JSON.stringify(items);
+                }
+                for (const [dateKey, cups] of Object.entries(cloud.items.dailyCups)) {
+                  snapshotMap[`water_${dateKey}`] = JSON.stringify({ cupsCount: cups });
+                }
+                if (cloud.items.study) snapshotMap['study_main'] = JSON.stringify(cloud.items.study);
+                lastItemsSnapshotRef.current = snapshotMap;
+              }
+              isCloudLoadedRef.current = true;
+            } else {
+              // Cloud is empty for this user: inspect if there's local data on this browser
+              const summary = inspectLocalData();
+              if (summary.hasData) {
+                setLocalSummary(summary);
+                setIsMigrationModalOpen(true);
+              } else {
+                isCloudLoadedRef.current = true;
+              }
+            }
+          } catch (cloudErr) {
+            console.warn('Erro ao carregar dados da nuvem:', cloudErr);
+            isCloudLoadedRef.current = true;
+          }
         } catch (e) {
           console.error('Error loading user profile:', e);
           if (isMounted) {
@@ -731,6 +816,7 @@ export function App() {
                 'Hoje às ' +
                 new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
             });
+            isCloudLoadedRef.current = true;
           }
         }
       } else {
@@ -741,6 +827,7 @@ export function App() {
             isLoggedIn: false,
           });
           setNeedsPrivacyConsent(false);
+          isCloudLoadedRef.current = false;
         }
       }
 
@@ -790,6 +877,284 @@ export function App() {
       subscription.unsubscribe();
     };
   }, []);
+
+  // Supabase Realtime channel subscription for multi-device sync
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase || !userSession.id || !userSession.isLoggedIn) {
+      if (realtimeChannelRef.current && supabase) {
+        supabase.removeChannel(realtimeChannelRef.current);
+        realtimeChannelRef.current = null;
+      }
+      return;
+    }
+
+    const userId = userSession.id;
+    const channel = supabase
+      .channel(`user-sync-${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'items',
+          filter: `user_id=eq.${userId}`,
+        },
+        (payload: any) => {
+          if (isSyncingRef.current) return;
+          const { eventType, new: newRow, old: oldRow } = payload;
+          if (eventType === 'DELETE') {
+            const oldId = oldRow?.id;
+            if (!oldId) return;
+            setEvents((prev) => prev.filter((e) => e.id !== oldId));
+            setNotices((prev) => prev.filter((n) => n.id !== oldId));
+            setJournalEntries((prev) => prev.filter((j) => j.id !== oldId));
+            setDesabafos((prev) => prev.filter((d) => d.id !== oldId));
+            setGoals((prev) => prev.filter((g) => g.id !== oldId));
+            setPeople((prev) => prev.filter((p) => p.id !== oldId));
+          } else if (newRow && newRow.data) {
+            const col = newRow.collection;
+            const data = newRow.data;
+            if (col === 'events') {
+              setEvents((prev) => [data, ...prev.filter((e) => e.id !== newRow.id)]);
+            } else if (col === 'notices') {
+              setNotices((prev) => [data, ...prev.filter((n) => n.id !== newRow.id)]);
+            } else if (col === 'journal') {
+              setJournalEntries((prev) => [data, ...prev.filter((j) => j.id !== newRow.id)]);
+            } else if (col === 'desabafos') {
+              setDesabafos((prev) => [data, ...prev.filter((d) => d.id !== newRow.id)]);
+            } else if (col === 'goals') {
+              setGoals((prev) => [data, ...prev.filter((g) => g.id !== newRow.id)]);
+            } else if (col === 'people') {
+              setPeople((prev) => [data, ...prev.filter((p) => p.id !== newRow.id)]);
+            } else if (col === 'roteiros' && newRow.key) {
+              setDailyRoteiros((prev) => ({ ...prev, [newRow.key]: data.items || [] }));
+            } else if (col === 'water' && newRow.key) {
+              setDailyCupsDrank((prev) => ({ ...prev, [newRow.key]: data.cupsCount || 0 }));
+            } else if (col === 'study') {
+              setStudyData(data);
+            }
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'user_settings',
+          filter: `user_id=eq.${userId}`,
+        },
+        (payload: any) => {
+          if (isSyncingRef.current) return;
+          const newSettings = payload.new?.data;
+          if (newSettings) {
+            if (newSettings.appTitle) setAppTitle(newSettings.appTitle);
+            if (typeof newSettings.isDarkMode === 'boolean') setIsDarkMode(newSettings.isDarkMode);
+            if (typeof newSettings.useUserPhotoAsLogo === 'boolean') setUseUserPhotoAsLogo(newSettings.useUserPhotoAsLogo);
+            if (newSettings.alarmConfig) setAlarmConfig(newSettings.alarmConfig);
+            if (newSettings.hydrationConfig) setHydrationConfig(newSettings.hydrationConfig);
+            if (newSettings.images) setImages(newSettings.images);
+            if (newSettings.userDefaultRoteiro) setUserDefaultRoteiro(newSettings.userDefaultRoteiro);
+            if (typeof newSettings.autoApplyDefaultRoutine === 'boolean') setAutoApplyDefaultRoutine(newSettings.autoApplyDefaultRoutine);
+            if (newSettings.meal) setMeal(newSettings.meal);
+          }
+        }
+      )
+      .subscribe();
+
+    realtimeChannelRef.current = channel;
+
+    return () => {
+      if (realtimeChannelRef.current && supabase) {
+        supabase.removeChannel(realtimeChannelRef.current);
+        realtimeChannelRef.current = null;
+      }
+    };
+  }, [userSession.id, userSession.isLoggedIn]);
+
+  // Debounced Differential Synchronization to Supabase (~800ms)
+  useEffect(() => {
+    if (!userSession.isLoggedIn || !userSession.id || !isCloudLoadedRef.current) {
+      return;
+    }
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    setSyncState('sincronizando');
+
+    debounceTimerRef.current = setTimeout(async () => {
+      const userId = userSession.id!;
+      if (!isSupabaseConfigured || !supabase || !navigator.onLine) {
+        setSyncState('offline');
+        return;
+      }
+
+      try {
+        isSyncingRef.current = true;
+        const now = new Date().toISOString();
+
+        // 1. Settings Diff
+        const currentSettings: UserSettingsData = {
+          appTitle,
+          isDarkMode,
+          useUserPhotoAsLogo,
+          alarmConfig,
+          hydrationConfig,
+          images,
+          userDefaultRoteiro,
+          autoApplyDefaultRoutine,
+          meal,
+        };
+        const settingsJson = JSON.stringify(currentSettings);
+        if (settingsJson !== lastSettingsSnapshotRef.current) {
+          const { error: setErr } = await supabase.from('user_settings').upsert({
+            user_id: userId,
+            data: currentSettings,
+            updated_at: now,
+          });
+          if (setErr) throw setErr;
+          lastSettingsSnapshotRef.current = settingsJson;
+        }
+
+        // 2. Items Diff calculation
+        const currentItemsMap: Record<string, { collection: string; key: string; data: any }> = {};
+
+        for (const j of journalEntries) {
+          currentItemsMap[j.id] = { collection: 'journal', key: j.id, data: j };
+        }
+        for (const d of desabafos) {
+          currentItemsMap[d.id] = { collection: 'desabafos', key: d.id, data: d };
+        }
+        for (const g of goals) {
+          currentItemsMap[g.id] = { collection: 'goals', key: g.id, data: g };
+        }
+        for (const n of notices) {
+          currentItemsMap[n.id] = { collection: 'notices', key: n.id, data: n };
+        }
+        for (const e of events) {
+          currentItemsMap[e.id] = { collection: 'events', key: e.id, data: e };
+        }
+        for (const p of people) {
+          currentItemsMap[p.id] = { collection: 'people', key: p.id, data: p };
+        }
+        for (const [dateKey, list] of Object.entries(dailyRoteiros)) {
+          const rowId = ensureUUID(`roteiro_${dateKey}`);
+          currentItemsMap[rowId] = {
+            collection: 'roteiros',
+            key: dateKey,
+            data: { items: list },
+          };
+        }
+        for (const [dateKey, count] of Object.entries(dailyCupsDrank)) {
+          const rowId = ensureUUID(`water_${dateKey}`);
+          currentItemsMap[rowId] = {
+            collection: 'water',
+            key: dateKey,
+            data: { cupsCount: count },
+          };
+        }
+        if (studyData) {
+          const rowId = ensureUUID('study_main');
+          currentItemsMap[rowId] = {
+            collection: 'study',
+            key: 'main',
+            data: studyData,
+          };
+        }
+
+        const itemsToUpsert: CloudItemRow[] = [];
+        const itemsToDelete: string[] = [];
+
+        // Check for created or updated items
+        for (const [id, item] of Object.entries(currentItemsMap)) {
+          const serialized = JSON.stringify(item.data);
+          if (lastItemsSnapshotRef.current[id] !== serialized) {
+            itemsToUpsert.push({
+              id,
+              user_id: userId,
+              collection: item.collection,
+              key: item.key,
+              data: item.data,
+              updated_at: now,
+            });
+          }
+        }
+
+        // Check for deleted items
+        for (const oldId of Object.keys(lastItemsSnapshotRef.current)) {
+          if (!currentItemsMap[oldId]) {
+            itemsToDelete.push(oldId);
+          }
+        }
+
+        // Execute batch upserts
+        if (itemsToUpsert.length > 0) {
+          const { error: upsertErr } = await supabase.from('items').upsert(itemsToUpsert);
+          if (upsertErr) throw upsertErr;
+        }
+
+        // Execute batch deletes
+        if (itemsToDelete.length > 0) {
+          const { error: delErr } = await supabase
+            .from('items')
+            .delete()
+            .in('id', itemsToDelete)
+            .eq('user_id', userId);
+          if (delErr) throw delErr;
+        }
+
+        // Update local items snapshot
+        const newSnapshot: Record<string, string> = {};
+        for (const [id, item] of Object.entries(currentItemsMap)) {
+          newSnapshot[id] = JSON.stringify(item.data);
+        }
+        lastItemsSnapshotRef.current = newSnapshot;
+
+        // Flush any offline backlog
+        await flushOfflineQueue(userId);
+
+        setSyncState('sincronizado');
+        setUserSession((prev) => ({
+          ...prev,
+          lastSyncedAt:
+            'Hoje às ' +
+            new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+        }));
+      } catch (err) {
+        console.error('Falha na sincronização diferencial:', err);
+        setSyncState('erro');
+      } finally {
+        isSyncingRef.current = false;
+      }
+    }, 800);
+
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, [
+    userSession.isLoggedIn,
+    userSession.id,
+    appTitle,
+    isDarkMode,
+    useUserPhotoAsLogo,
+    alarmConfig,
+    hydrationConfig,
+    images,
+    userDefaultRoteiro,
+    autoApplyDefaultRoutine,
+    meal,
+    journalEntries,
+    desabafos,
+    goals,
+    notices,
+    events,
+    people,
+    dailyRoteiros,
+    dailyCupsDrank,
+    studyData,
+  ]);
 
   // Sync Dark Mode with DOM
   useEffect(() => {
@@ -928,7 +1293,7 @@ export function App() {
           : [];
       const created: RoteiroItem = {
         ...newItem,
-        id: `r_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        id: generateUUID(),
       };
       return { ...prev, [currentDateKey]: [...dayList, created] };
     });
@@ -974,7 +1339,7 @@ export function App() {
       ...prev,
       [currentDateKey]: userDefaultRoteiro.map((item) => ({
         ...item,
-        id: `r_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        id: generateUUID(),
         done: false,
       })),
     }));
@@ -1006,7 +1371,7 @@ export function App() {
   const handleAddEvent = (newEvent: Omit<CalendarEvent, 'id'>) => {
     const created: CalendarEvent = {
       ...newEvent,
-      id: `ev_${Date.now()}`,
+      id: generateUUID(),
     };
     setEvents((prev) => [created, ...prev]);
   };
@@ -1022,7 +1387,7 @@ export function App() {
   const handleAddNotice = (newNotice: Omit<NoticeItem, 'id'>) => {
     const created: NoticeItem = {
       ...newNotice,
-      id: `not_${Date.now()}`,
+      id: generateUUID(),
     };
     setNotices((prev) => [created, ...prev]);
   };
@@ -1099,7 +1464,7 @@ export function App() {
       {
         ...newPerson,
         name: trimmedName,
-        id: newPerson.id || crypto.randomUUID(),
+        id: newPerson.id || generateUUID(),
       },
     ]);
   };
@@ -1138,7 +1503,7 @@ export function App() {
       const updatedKidProfiles: PersonProfile[] = updatedKids.map((k) => {
         const existing = prev.find((p) => p.id === k.id);
         return {
-          id: k.id,
+          id: k.id || generateUUID(),
           name: k.name.trim(),
           avatarUrl: k.photoUrl,
           category: 'pequenos',
@@ -1156,7 +1521,7 @@ export function App() {
   const handleAddJournalEntry = (newEntry: Omit<JournalEntry, 'id' | 'createdAt'>) => {
     const created: JournalEntry = {
       ...newEntry,
-      id: `j_${Date.now()}`,
+      id: generateUUID(),
       createdAt: new Date().toISOString(),
     };
     setJournalEntries((prev) => [created, ...prev]);
@@ -1170,7 +1535,7 @@ export function App() {
   const handleSaveDesabafo = (entry: Omit<DesabafoEntry, 'id' | 'createdAt'>) => {
     const created: DesabafoEntry = {
       ...entry,
-      id: `des_${Date.now()}`,
+      id: generateUUID(),
       createdAt: new Date().toISOString(),
     };
     setDesabafos((prev) => [created, ...prev]);
@@ -1202,13 +1567,63 @@ export function App() {
   const handleAddGoal = (newGoal: Omit<Goal, 'id'>) => {
     const created: Goal = {
       ...newGoal,
-      id: `g_${Date.now()}`,
+      id: generateUUID(),
+      milestones: (newGoal.milestones || []).map((m) => ({
+        ...m,
+        id: m.id || generateUUID(),
+      })),
     };
     setGoals((prev) => [created, ...prev]);
   };
 
   const handleDeleteGoal = (goalId: string) => {
     setGoals((prev) => prev.filter((g) => g.id !== goalId));
+  };
+
+  // Migration modal actions
+  const handlePerformMigration = async () => {
+    if (!userSession.id) return;
+    setSyncState('sincronizando');
+    const res = await migrateLocalDataToCloud(userSession.id);
+    if (!res.success) {
+      throw new Error(res.error || 'Erro na migração dos dados.');
+    }
+    const cloud = await loadCloudState(userSession.id);
+    if (cloud.hasCloudData) {
+      if (cloud.settings) {
+        if (cloud.settings.appTitle) setAppTitle(cloud.settings.appTitle);
+        if (typeof cloud.settings.isDarkMode === 'boolean') setIsDarkMode(cloud.settings.isDarkMode);
+        if (typeof cloud.settings.useUserPhotoAsLogo === 'boolean') setUseUserPhotoAsLogo(cloud.settings.useUserPhotoAsLogo);
+        if (cloud.settings.alarmConfig) setAlarmConfig(cloud.settings.alarmConfig as AgendaAlarmConfig);
+        if (cloud.settings.hydrationConfig) setHydrationConfig(cloud.settings.hydrationConfig);
+        if (cloud.settings.images) setImages(cloud.settings.images);
+        if (cloud.settings.userDefaultRoteiro) setUserDefaultRoteiro(cloud.settings.userDefaultRoteiro);
+        if (typeof cloud.settings.autoApplyDefaultRoutine === 'boolean') setAutoApplyDefaultRoutine(cloud.settings.autoApplyDefaultRoutine);
+        if (cloud.settings.meal) setMeal(cloud.settings.meal);
+      }
+      if (cloud.items) {
+        setJournalEntries(cloud.items.journal);
+        setDesabafos(cloud.items.desabafos);
+        setGoals(cloud.items.goals);
+        setNotices(cloud.items.notices);
+        setEvents(cloud.items.events);
+        setPeople(cloud.items.people.filter((p) => p.id !== 'me' && p.role !== 'primary'));
+        setDailyRoteiros(cloud.items.roteiros);
+        setDailyCupsDrank(cloud.items.dailyCups);
+        if (cloud.items.study) setStudyData(cloud.items.study);
+      }
+      isCloudLoadedRef.current = true;
+    }
+    setSyncState('sincronizado');
+  };
+
+  const handleSkipMigration = () => {
+    setIsMigrationModalOpen(false);
+    isCloudLoadedRef.current = true;
+  };
+
+  const handleClearLocalData = () => {
+    clearAllLocalAtelierData();
   };
 
   // Real Supabase Google Login Handler
@@ -1729,6 +2144,16 @@ export function App() {
         onClose={() => setIsKidsManagerOpen(false)}
         kids={kids}
         onUpdateKids={handleUpdateKids}
+      />
+
+      {/* Modal de Migração de Dados Locais para Nuvem */}
+      <CloudMigrationModal
+        isOpen={isMigrationModalOpen}
+        onClose={() => setIsMigrationModalOpen(false)}
+        summary={localSummary}
+        onMigrate={handlePerformMigration}
+        onSkip={handleSkipMigration}
+        onClearLocal={handleClearLocalData}
       />
     </div>
   );
