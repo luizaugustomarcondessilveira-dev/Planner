@@ -23,6 +23,7 @@ import {
 import { RoteiroItem, MealPlan, AppImages, HydrationConfig } from '../../types';
 import { soundEffects } from '../../utils/audio';
 import { toLocalDateKey } from '../../utils/date';
+import { sanitizeImageUrl } from '../../lib/security';
 
 interface HojeViewProps {
   selectedDate: Date;
@@ -790,8 +791,9 @@ export const HojeView: React.FC<HojeViewProps> = ({
       <div className="relative rounded-3xl bg-white dark:bg-[#251D17] border border-[#EBDED5] dark:border-[#3D2E24] shadow-xs overflow-hidden">
         <div className="relative h-48 sm:h-56 w-full overflow-hidden">
           <img
-            src={images.meal}
+            src={sanitizeImageUrl(images.meal, 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&q=80&w=800')}
             alt={meal.dishName}
+            referrerPolicy="no-referrer"
             className="w-full h-full object-cover transition-transform hover:scale-105 duration-700"
             loading="lazy"
           />

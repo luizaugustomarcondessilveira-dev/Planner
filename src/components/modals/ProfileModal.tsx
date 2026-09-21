@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { AppImages, UserSession } from '../../types';
 import { resizeImage } from '../../utils/imageResizer';
+import { sanitizeImageUrl, sanitizeText } from '../../lib/security';
 
 interface ProfileModalProps {
   isOpen: boolean;
@@ -60,16 +61,27 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (!file.type.match(/^image\/(png|jpeg|jpg|webp|gif)$/)) {
+      alert('Selecione uma imagem válida (PNG, JPEG ou WEBP).');
+      return;
+    }
+
+    if (file.size > 2 * 1024 * 1024) {
+      alert('A imagem não pode ultrapassar 2MB.');
+      return;
+    }
+
     try {
       setIsProcessing(true);
       const resizedBase64 = await resizeImage(file, 400, 400); // limit for local storage
-      setAvatarUrl(resizedBase64);
-      onUpdateAvatar(resizedBase64);
+      const safeUrl = sanitizeImageUrl(resizedBase64);
+      setAvatarUrl(safeUrl);
+      onUpdateAvatar(safeUrl);
       setSavedNotice(true);
       setTimeout(() => setSavedNotice(false), 2000);
     } catch (err) {
       console.error('Failed to process image:', err);
-      alert('Erro ao carregar a imagem. A imagem pode ser grande demais ou estar em formato não suportado.');
+      alert('Erro ao processar a imagem.');
     } finally {
       setIsProcessing(false);
     }
@@ -77,8 +89,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
-    onUpdateSessionProfile(name.trim(), email.trim());
-    onUpdateAvatar(avatarUrl);
+    const cleanName = sanitizeText(name, 80) || 'Helena';
+    const cleanEmail = sanitizeText(email, 120);
+    const cleanAvatar = sanitizeImageUrl(avatarUrl);
+    onUpdateSessionProfile(cleanName, cleanEmail);
+    onUpdateAvatar(cleanAvatar);
     setSavedNotice(true);
     setTimeout(() => {
       setSavedNotice(false);
@@ -125,8 +140,9 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             <div className="relative group">
               <div className="w-24 h-24 rounded-full overflow-hidden border-2 border-[#EBDED5] dark:border-[#3D2E24] ring-4 ring-[#E8A5B8]/30 shadow-md">
                 <img
-                  src={avatarUrl}
+                  src={sanitizeImageUrl(avatarUrl, 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=400')}
                   alt={name}
+                  referrerPolicy="no-referrer"
                   className="w-full h-full object-cover"
                 />
               </div>

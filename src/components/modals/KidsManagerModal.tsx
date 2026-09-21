@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { KidProfile } from '../../types';
 import { resizeImage } from '../../utils/imageResizer';
+import { sanitizeImageUrl, sanitizeText } from '../../lib/security';
 
 interface KidsManagerModalProps {
   isOpen: boolean;
@@ -56,11 +57,22 @@ export const KidsManagerModal: React.FC<KidsManagerModalProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (!file.type.match(/^image\/(png|jpeg|jpg|webp|gif)$/)) {
+      alert('Selecione uma imagem válida (PNG, JPEG ou WEBP).');
+      return;
+    }
+
+    if (file.size > 2 * 1024 * 1024) {
+      alert('A imagem não pode ultrapassar 2MB.');
+      return;
+    }
+
     try {
       setIsProcessing(true);
       const resizedBase64 = await resizeImage(file, 400, 400); // 400x400 limit for local storage
+      const safeUrl = sanitizeImageUrl(resizedBase64);
       setLocalKids((prev) =>
-        prev.map((k) => (k.id === kidId ? { ...k, photoUrl: resizedBase64 } : k))
+        prev.map((k) => (k.id === kidId ? { ...k, photoUrl: safeUrl } : k))
       );
     } catch (err) {
       console.error('Failed to process image:', err);
@@ -71,8 +83,10 @@ export const KidsManagerModal: React.FC<KidsManagerModalProps> = ({
   };
 
   const handleUpdateField = (kidId: string, field: keyof KidProfile, val: string) => {
+    const maxLength = field === 'name' ? 80 : field === 'birthDate' ? 50 : 500;
+    const sanitizedVal = sanitizeText(val, maxLength);
     setLocalKids((prev) =>
-      prev.map((k) => (k.id === kidId ? { ...k, [field]: val } : k))
+      prev.map((k) => (k.id === kidId ? { ...k, [field]: sanitizedVal } : k))
     );
   };
 
@@ -98,7 +112,14 @@ export const KidsManagerModal: React.FC<KidsManagerModalProps> = ({
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
-    onUpdateKids(localKids);
+    const sanitizedKids = localKids.map((k) => ({
+      ...k,
+      name: sanitizeText(k.name, 80) || 'Filho(a)',
+      photoUrl: sanitizeImageUrl(k.photoUrl, 'https://images.unsplash.com/photo-1543332164-6e82f355badc?auto=format&fit=crop&w=400&q=80'),
+      birthDate: sanitizeText(k.birthDate || '', 50),
+      notes: sanitizeText(k.notes || '', 500),
+    }));
+    onUpdateKids(sanitizedKids);
     setSavedNotice(true);
     setTimeout(() => {
       setSavedNotice(false);
@@ -162,8 +183,9 @@ export const KidsManagerModal: React.FC<KidsManagerModalProps> = ({
                 <div className="relative group shrink-0">
                   <div className="w-18 h-18 rounded-2xl overflow-hidden border-2 border-[#EBDED5] dark:border-[#3D2E24] ring-4 ring-[#E8A5B8]/30 shadow-md">
                     <img
-                      src={kid.photoUrl}
+                      src={sanitizeImageUrl(kid.photoUrl, 'https://images.unsplash.com/photo-1543332164-6e82f355badc?auto=format&fit=crop&w=400&q=80')}
                       alt={kid.name}
+                      referrerPolicy="no-referrer"
                       className="w-full h-full object-cover"
                     />
                   </div>

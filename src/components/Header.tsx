@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AppTab, AppImages, UserSession, SyncState } from '../types';
 import { AALogo } from './AALogo';
+import { sanitizeImageUrl } from '../lib/security';
 import {
   Image as ImageIcon,
   Sun,
@@ -231,8 +232,9 @@ export const Header: React.FC<HeaderProps> = ({
             >
               <div className="w-8 h-8 rounded-full overflow-hidden border border-[#EBDED5] dark:border-[#3D2E24] ring-2 ring-[#E8A5B8]/40 shadow-sm">
                 <img
-                  src={images.avatar}
+                  src={sanitizeImageUrl(images.avatar, 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=400')}
                   alt={userSession.name || 'Helena'}
+                  referrerPolicy="no-referrer"
                   className="w-full h-full object-cover"
                 />
               </div>

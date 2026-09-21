@@ -32,6 +32,7 @@ import {
   FocusSettings,
 } from '../../types';
 import { soundEffects } from '../../utils/audio';
+import { sanitizeImageUrl } from '../../lib/security';
 import {
   toLocalDateKey,
   getDaysDiffFromToday,
@@ -594,8 +595,9 @@ export const EstudosView: React.FC<EstudosViewProps> = ({
       {/* 1. Header Banner with Direct HTML Image and Edit Controls */}
       <div className="relative rounded-3xl overflow-hidden border border-[#EBDED5] dark:border-[#3D2E24] shadow-xs h-48 bg-[#452414]">
         <img
-          src={images.studyDesk}
+          src={sanitizeImageUrl(images.studyDesk, 'https://images.unsplash.com/photo-1456513080510-7bf3a84b82f8?auto=format&fit=crop&q=80&w=800')}
           alt="Ambiente de Estudos e TCC"
+          referrerPolicy="no-referrer"
           className="w-full h-full object-cover"
           loading="lazy"
         />

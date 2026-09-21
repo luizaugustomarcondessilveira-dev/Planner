@@ -18,6 +18,9 @@ import { KidsManagerModal } from './components/modals/KidsManagerModal';
 import { AuthWelcomeView } from './components/auth/AuthWelcomeView';
 import { PrivacyConsentModal } from './components/auth/PrivacyConsentModal';
 import { CloudMigrationModal } from './components/modals/CloudMigrationModal';
+import { PinSettingsModal } from './components/modals/PinSettingsModal';
+import { PinLockScreen } from './components/views/PinLockScreen';
+import { loadPinConfig, savePinConfig, PinLockConfig } from './lib/security';
 import { AALogo } from './components/AALogo';
 import { supabase, isSupabaseConfigured } from './lib/supabase';
 import {
@@ -27,9 +30,11 @@ import {
   clearAllLocalAtelierData,
   enqueueSyncOperation,
   flushOfflineQueue,
+  syncKeyedCollection,
+  syncUnkeyedCollection,
+  deleteItemsByIds,
   LocalDataSummary,
   UserSettingsData,
-  CloudItemRow,
 } from './lib/cloudSync';
 import { generateUUID, ensureUUID } from './utils/uuid';
 
@@ -511,6 +516,41 @@ export function App() {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [isAlarmSettingsOpen, setIsAlarmSettingsOpen] = useState(false);
   const [isKidsManagerOpen, setIsKidsManagerOpen] = useState(false);
+  const [isPinSettingsOpen, setIsPinSettingsOpen] = useState(false);
+
+  // Privacy PIN state
+  const [pinConfig, setPinConfig] = useState<PinLockConfig | null>(() => loadPinConfig());
+  const [isPinLocked, setIsPinLocked] = useState<boolean>(() => {
+    const loaded = loadPinConfig();
+    return Boolean(loaded?.enabled);
+  });
+
+  // 1-minute (60s) inactivity lock for sensitive screens
+  useEffect(() => {
+    if (!pinConfig?.enabled || isPinLocked) return;
+
+    let timer: NodeJS.Timeout;
+    const resetTimer = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        setIsPinLocked(true);
+      }, 60 * 1000); // 1 min inactivity
+    };
+
+    resetTimer();
+    window.addEventListener('mousemove', resetTimer);
+    window.addEventListener('keydown', resetTimer);
+    window.addEventListener('touchstart', resetTimer);
+    window.addEventListener('click', resetTimer);
+
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('mousemove', resetTimer);
+      window.removeEventListener('keydown', resetTimer);
+      window.removeEventListener('touchstart', resetTimer);
+      window.removeEventListener('click', resetTimer);
+    };
+  }, [pinConfig?.enabled, isPinLocked]);
 
   // Set to prevent re-triggering the same alarm within the same minute
   const triggeredAlarmsRef = useRef<Set<string>>(new Set());
@@ -781,12 +821,12 @@ export function App() {
                 for (const e of cloud.items.events) snapshotMap[e.id] = JSON.stringify(e);
                 for (const p of cloud.items.people) snapshotMap[p.id] = JSON.stringify(p);
                 for (const [dateKey, items] of Object.entries(cloud.items.roteiros)) {
-                  snapshotMap[`roteiro_${dateKey}`] = JSON.stringify(items);
+                  snapshotMap[`roteiros:${dateKey}`] = JSON.stringify(items);
                 }
                 for (const [dateKey, cups] of Object.entries(cloud.items.dailyCups)) {
-                  snapshotMap[`water_${dateKey}`] = JSON.stringify({ cupsCount: cups });
+                  snapshotMap[`water:${dateKey}`] = JSON.stringify(cups);
                 }
-                if (cloud.items.study) snapshotMap['study_main'] = JSON.stringify(cloud.items.study);
+                if (cloud.items.study) snapshotMap['study:main'] = JSON.stringify(cloud.items.study);
                 lastItemsSnapshotRef.current = snapshotMap;
               }
               isCloudLoadedRef.current = true;
@@ -994,6 +1034,8 @@ export function App() {
       try {
         isSyncingRef.current = true;
         const now = new Date().toISOString();
+        const failedCollections: string[] = [];
+        const updatedSnapshot = { ...lastItemsSnapshotRef.current };
 
         // 1. Settings Diff
         const currentSettings: UserSettingsData = {
@@ -1009,121 +1051,195 @@ export function App() {
         };
         const settingsJson = JSON.stringify(currentSettings);
         if (settingsJson !== lastSettingsSnapshotRef.current) {
-          const { error: setErr } = await supabase.from('user_settings').upsert({
-            user_id: userId,
-            data: currentSettings,
-            updated_at: now,
-          });
-          if (setErr) throw setErr;
-          lastSettingsSnapshotRef.current = settingsJson;
-        }
-
-        // 2. Items Diff calculation
-        const currentItemsMap: Record<string, { collection: string; key: string; data: any }> = {};
-
-        for (const j of journalEntries) {
-          currentItemsMap[j.id] = { collection: 'journal', key: j.id, data: j };
-        }
-        for (const d of desabafos) {
-          currentItemsMap[d.id] = { collection: 'desabafos', key: d.id, data: d };
-        }
-        for (const g of goals) {
-          currentItemsMap[g.id] = { collection: 'goals', key: g.id, data: g };
-        }
-        for (const n of notices) {
-          currentItemsMap[n.id] = { collection: 'notices', key: n.id, data: n };
-        }
-        for (const e of events) {
-          currentItemsMap[e.id] = { collection: 'events', key: e.id, data: e };
-        }
-        for (const p of people) {
-          currentItemsMap[p.id] = { collection: 'people', key: p.id, data: p };
-        }
-        for (const [dateKey, list] of Object.entries(dailyRoteiros)) {
-          const rowId = ensureUUID(`roteiro_${dateKey}`);
-          currentItemsMap[rowId] = {
-            collection: 'roteiros',
-            key: dateKey,
-            data: { items: list },
-          };
-        }
-        for (const [dateKey, count] of Object.entries(dailyCupsDrank)) {
-          const rowId = ensureUUID(`water_${dateKey}`);
-          currentItemsMap[rowId] = {
-            collection: 'water',
-            key: dateKey,
-            data: { cupsCount: count },
-          };
-        }
-        if (studyData) {
-          const rowId = ensureUUID('study_main');
-          currentItemsMap[rowId] = {
-            collection: 'study',
-            key: 'main',
-            data: studyData,
-          };
-        }
-
-        const itemsToUpsert: CloudItemRow[] = [];
-        const itemsToDelete: string[] = [];
-
-        // Check for created or updated items
-        for (const [id, item] of Object.entries(currentItemsMap)) {
-          const serialized = JSON.stringify(item.data);
-          if (lastItemsSnapshotRef.current[id] !== serialized) {
-            itemsToUpsert.push({
-              id,
+          const { error: setErr } = await supabase.from('user_settings').upsert(
+            {
               user_id: userId,
-              collection: item.collection,
-              key: item.key,
-              data: item.data,
+              data: currentSettings,
               updated_at: now,
-            });
+            },
+            { onConflict: 'user_id' }
+          );
+          if (setErr) {
+            console.error('[Supabase Sync] Falha ao atualizar user_settings:', setErr);
+            failedCollections.push('settings');
+          } else {
+            lastSettingsSnapshotRef.current = settingsJson;
           }
         }
 
-        // Check for deleted items
-        for (const oldId of Object.keys(lastItemsSnapshotRef.current)) {
-          if (!currentItemsMap[oldId]) {
-            itemsToDelete.push(oldId);
+        // 2a. Group B: Unkeyed Collections (journal, desabafos, goals, notices, events, people)
+        // Envia: id (UUID estável), user_id, collection, data, updated_at
+        // onConflict: 'id'
+
+        // Journal
+        const journalToSync = journalEntries
+          .filter((j) => updatedSnapshot[j.id] !== JSON.stringify(j))
+          .map((j) => ({ id: j.id, data: j }));
+        if (journalToSync.length > 0) {
+          const res = await syncUnkeyedCollection(userId, 'journal', journalToSync);
+          if (res.success) {
+            for (const j of journalEntries) updatedSnapshot[j.id] = JSON.stringify(j);
+          } else {
+            failedCollections.push('journal');
           }
         }
 
-        // Execute batch upserts
-        if (itemsToUpsert.length > 0) {
-          const { error: upsertErr } = await supabase.from('items').upsert(itemsToUpsert);
-          if (upsertErr) throw upsertErr;
+        // Desabafos
+        const desabafosToSync = desabafos
+          .filter((d) => updatedSnapshot[d.id] !== JSON.stringify(d))
+          .map((d) => ({ id: d.id, data: d }));
+        if (desabafosToSync.length > 0) {
+          const res = await syncUnkeyedCollection(userId, 'desabafos', desabafosToSync);
+          if (res.success) {
+            for (const d of desabafos) updatedSnapshot[d.id] = JSON.stringify(d);
+          } else {
+            failedCollections.push('desabafos');
+          }
         }
 
-        // Execute batch deletes
-        if (itemsToDelete.length > 0) {
-          const { error: delErr } = await supabase
-            .from('items')
-            .delete()
-            .in('id', itemsToDelete)
-            .eq('user_id', userId);
-          if (delErr) throw delErr;
+        // Goals
+        const goalsToSync = goals
+          .filter((g) => updatedSnapshot[g.id] !== JSON.stringify(g))
+          .map((g) => ({ id: g.id, data: g }));
+        if (goalsToSync.length > 0) {
+          const res = await syncUnkeyedCollection(userId, 'goals', goalsToSync);
+          if (res.success) {
+            for (const g of goals) updatedSnapshot[g.id] = JSON.stringify(g);
+          } else {
+            failedCollections.push('goals');
+          }
         }
 
-        // Update local items snapshot
-        const newSnapshot: Record<string, string> = {};
-        for (const [id, item] of Object.entries(currentItemsMap)) {
-          newSnapshot[id] = JSON.stringify(item.data);
+        // Notices
+        const noticesToSync = notices
+          .filter((n) => updatedSnapshot[n.id] !== JSON.stringify(n))
+          .map((n) => ({ id: n.id, data: n }));
+        if (noticesToSync.length > 0) {
+          const res = await syncUnkeyedCollection(userId, 'notices', noticesToSync);
+          if (res.success) {
+            for (const n of notices) updatedSnapshot[n.id] = JSON.stringify(n);
+          } else {
+            failedCollections.push('notices');
+          }
         }
-        lastItemsSnapshotRef.current = newSnapshot;
+
+        // Events
+        const eventsToSync = events
+          .filter((e) => updatedSnapshot[e.id] !== JSON.stringify(e))
+          .map((e) => ({ id: e.id, data: e }));
+        if (eventsToSync.length > 0) {
+          const res = await syncUnkeyedCollection(userId, 'events', eventsToSync);
+          if (res.success) {
+            for (const e of events) updatedSnapshot[e.id] = JSON.stringify(e);
+          } else {
+            failedCollections.push('events');
+          }
+        }
+
+        // People
+        const peopleToSync = people
+          .filter((p) => updatedSnapshot[p.id] !== JSON.stringify(p))
+          .map((p) => ({ id: p.id, data: p }));
+        if (peopleToSync.length > 0) {
+          const res = await syncUnkeyedCollection(userId, 'people', peopleToSync);
+          if (res.success) {
+            for (const p of people) updatedSnapshot[p.id] = JSON.stringify(p);
+          } else {
+            failedCollections.push('people');
+          }
+        }
+
+        // 2b. Group A: Keyed Collections (roteiros, water, study)
+        // NÃO envia o campo id! Envia apenas user_id, collection, key, data, updated_at
+        // onConflict: 'user_id,collection,key'
+
+        // Roteiros (key = dateKey)
+        const roteirosToSync = Object.entries(dailyRoteiros)
+          .filter(([dateKey, list]) => updatedSnapshot[`roteiros:${dateKey}`] !== JSON.stringify(list))
+          .map(([dateKey, list]) => ({ key: dateKey, data: { items: list } }));
+        if (roteirosToSync.length > 0) {
+          const res = await syncKeyedCollection(userId, 'roteiros', roteirosToSync);
+          if (res.success) {
+            for (const [dateKey, list] of Object.entries(dailyRoteiros)) {
+              updatedSnapshot[`roteiros:${dateKey}`] = JSON.stringify(list);
+            }
+          } else {
+            failedCollections.push('roteiros');
+          }
+        }
+
+        // Water (key = dateKey)
+        const waterToSync = Object.entries(dailyCupsDrank)
+          .filter(([dateKey, count]) => updatedSnapshot[`water:${dateKey}`] !== JSON.stringify(count))
+          .map(([dateKey, count]) => ({ key: dateKey, data: { cupsCount: count } }));
+        if (waterToSync.length > 0) {
+          const res = await syncKeyedCollection(userId, 'water', waterToSync);
+          if (res.success) {
+            for (const [dateKey, count] of Object.entries(dailyCupsDrank)) {
+              updatedSnapshot[`water:${dateKey}`] = JSON.stringify(count);
+            }
+          } else {
+            failedCollections.push('water');
+          }
+        }
+
+        // Study (key = 'main')
+        if (studyData && updatedSnapshot['study:main'] !== JSON.stringify(studyData)) {
+          const res = await syncKeyedCollection(userId, 'study', [{ key: 'main', data: studyData }]);
+          if (res.success) {
+            updatedSnapshot['study:main'] = JSON.stringify(studyData);
+          } else {
+            failedCollections.push('study');
+          }
+        }
+
+        // 3. Deletions (Unkeyed items)
+        const currentUnkeyedIds = new Set<string>([
+          ...journalEntries.map((j) => j.id),
+          ...desabafos.map((d) => d.id),
+          ...goals.map((g) => g.id),
+          ...notices.map((n) => n.id),
+          ...events.map((e) => e.id),
+          ...people.map((p) => p.id),
+        ]);
+
+        const idsToDelete: string[] = [];
+        for (const oldKey of Object.keys(lastItemsSnapshotRef.current)) {
+          if (!oldKey.includes(':') && !currentUnkeyedIds.has(oldKey)) {
+            idsToDelete.push(oldKey);
+          }
+        }
+
+        if (idsToDelete.length > 0) {
+          const delRes = await deleteItemsByIds(userId, idsToDelete);
+          if (delRes.success) {
+            for (const id of idsToDelete) {
+              delete updatedSnapshot[id];
+            }
+          } else {
+            failedCollections.push('deletions');
+          }
+        }
+
+        lastItemsSnapshotRef.current = updatedSnapshot;
 
         // Flush any offline backlog
         await flushOfflineQueue(userId);
 
-        setSyncState('sincronizado');
-        setUserSession((prev) => ({
-          ...prev,
-          lastSyncedAt:
-            'Hoje às ' +
-            new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-        }));
+        if (failedCollections.length > 0) {
+          console.warn('[Supabase Sync] Coleções pendentes nesta rodada:', failedCollections);
+          setSyncState('erro');
+        } else {
+          setSyncState('sincronizado');
+          setUserSession((prev) => ({
+            ...prev,
+            lastSyncedAt:
+              'Hoje às ' +
+              new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+          }));
+        }
       } catch (err) {
-        console.error('Falha na sincronização diferencial:', err);
+        console.error('[Supabase Sync] Falha na sincronização diferencial:', err);
         setSyncState('erro');
       } finally {
         isSyncingRef.current = false;
@@ -1954,7 +2070,13 @@ export function App() {
         userSession={userSession}
         syncState={syncState}
         onOpenLoginModal={() => setIsLoginModalOpen(true)}
-        onOpenDesabafoModal={() => setIsDesabafoOpen(true)}
+        onOpenDesabafoModal={() => {
+          if (pinConfig?.enabled && isPinLocked) {
+            setCurrentTab('diario');
+          } else {
+            setIsDesabafoOpen(true);
+          }
+        }}
         onOpenImageManager={() => setIsImageManagerOpen(true)}
         onOpenProfile={() => setIsProfileOpen(true)}
         useUserPhotoAsLogo={useUserPhotoAsLogo}
@@ -1985,7 +2107,13 @@ export function App() {
             onUpdateMeal={setMeal}
             images={images}
             onOpenSosPrayer={() => setIsSosPrayerOpen(true)}
-            onOpenDesabafo={() => setIsDesabafoOpen(true)}
+            onOpenDesabafo={() => {
+              if (pinConfig?.enabled && isPinLocked) {
+                setCurrentTab('diario');
+              } else {
+                setIsDesabafoOpen(true);
+              }
+            }}
             onOpenImageManager={() => setIsImageManagerOpen(true)}
             hydrationConfig={hydrationConfig}
             onUpdateHydrationConfig={setHydrationConfig}
@@ -2020,13 +2148,24 @@ export function App() {
         )}
 
         {currentTab === 'diario' && (
-          <DiarioView
-            entries={journalEntries}
-            onAddEntry={handleAddJournalEntry}
-            onDeleteEntry={handleDeleteJournalEntry}
-            images={images}
-            onOpenImageManager={() => setIsImageManagerOpen(true)}
-          />
+          pinConfig?.enabled && isPinLocked ? (
+            <PinLockScreen
+              pinConfig={pinConfig}
+              onUnlock={() => setIsPinLocked(false)}
+              onOpenSettings={() => setIsPinSettingsOpen(true)}
+            />
+          ) : (
+            <DiarioView
+              entries={journalEntries}
+              onAddEntry={handleAddJournalEntry}
+              onDeleteEntry={handleDeleteJournalEntry}
+              images={images}
+              onOpenImageManager={() => setIsImageManagerOpen(true)}
+              isPinActive={Boolean(pinConfig?.enabled)}
+              onOpenPinSettings={() => setIsPinSettingsOpen(true)}
+              onLockNow={() => setIsPinLocked(true)}
+            />
+          )
         )}
 
         {currentTab === 'metas' && (
@@ -2144,6 +2283,22 @@ export function App() {
         onClose={() => setIsKidsManagerOpen(false)}
         kids={kids}
         onUpdateKids={handleUpdateKids}
+      />
+
+      {/* Modal de Configuração do PIN de Privacidade */}
+      <PinSettingsModal
+        isOpen={isPinSettingsOpen}
+        onClose={() => setIsPinSettingsOpen(false)}
+        currentConfig={pinConfig}
+        onConfigUpdated={(newCfg) => {
+          setPinConfig(newCfg);
+          savePinConfig(newCfg);
+          setIsPinLocked(Boolean(newCfg?.enabled));
+        }}
+        onLockImmediately={() => {
+          setIsPinLocked(true);
+          setIsPinSettingsOpen(false);
+        }}
       />
 
       {/* Modal de Migração de Dados Locais para Nuvem */}

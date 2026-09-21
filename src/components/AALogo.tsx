@@ -1,4 +1,5 @@
 import React from 'react';
+import { sanitizeImageUrl } from '../lib/security';
 
 interface AALogoProps {
   className?: string;
@@ -15,7 +16,8 @@ export const AALogo: React.FC<AALogoProps> = ({
   useUserPhotoAsLogo = false,
   userPhotoUrl,
 }) => {
-  const displayImage = useUserPhotoAsLogo && userPhotoUrl ? userPhotoUrl : customUrl;
+  const rawImage = useUserPhotoAsLogo && userPhotoUrl ? userPhotoUrl : customUrl;
+  const displayImage = sanitizeImageUrl(rawImage);
 
   if (displayImage) {
     return (
@@ -25,7 +27,8 @@ export const AALogo: React.FC<AALogoProps> = ({
       >
         <img
           src={displayImage}
-          alt="Atelier Logo"
+          alt="Logo"
+          referrerPolicy="no-referrer"
           className="w-full h-full object-cover"
         />
       </div>

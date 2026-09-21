@@ -316,11 +316,209 @@ export async function loadCloudState(userId: string): Promise<CloudState> {
 }
 
 // ==========================================
+// Two-Group Synchronization Engine
+// ==========================================
+
+export const KEYED_COLLECTIONS = ['roteiros', 'water', 'health', 'study'] as const;
+export const UNKEYED_COLLECTIONS = ['journal', 'desabafos', 'goals', 'notices', 'events', 'people'] as const;
+
+export type KeyedCollectionName = typeof KEYED_COLLECTIONS[number];
+export type UnkeyedCollectionName = typeof UNKEYED_COLLECTIONS[number];
+
+export function isKeyedCollection(col: string): col is KeyedCollectionName {
+  return (KEYED_COLLECTIONS as readonly string[]).includes(col);
+}
+
+export function isUnkeyedCollection(col: string): col is UnkeyedCollectionName {
+  return (UNKEYED_COLLECTIONS as readonly string[]).includes(col);
+}
+
+export interface KeyedSyncItem {
+  key: string;
+  data: any;
+}
+
+export interface UnkeyedSyncItem {
+  id: string;
+  data: any;
+}
+
+export interface CollectionSyncResult {
+  collection: string;
+  success: boolean;
+  count: number;
+  error?: {
+    code?: string;
+    message?: string;
+    details?: string;
+    hint?: string;
+  };
+}
+
+/**
+ * 1a. Sincronização de Coleções COM key (roteiros, water, health, study)
+ * NÃO envia o campo 'id'.
+ * Envia apenas: user_id, collection, key, data, updated_at
+ * onConflict: 'user_id,collection,key'
+ */
+export async function syncKeyedCollection(
+  userId: string,
+  collection: string,
+  items: KeyedSyncItem[]
+): Promise<CollectionSyncResult> {
+  if (!isSupabaseConfigured || !supabase || items.length === 0) {
+    return { collection, success: true, count: 0 };
+  }
+
+  const now = new Date().toISOString();
+  // DO NOT send id field!
+  const payload = items.map((it) => ({
+    user_id: userId,
+    collection,
+    key: it.key,
+    data: it.data,
+    updated_at: now,
+  }));
+
+  try {
+    const { error } = await supabase
+      .from('items')
+      .upsert(payload, { onConflict: 'user_id,collection,key' });
+
+    if (error) {
+      console.error(`[Supabase Sync] Falha na coleção com key "${collection}":`, {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+        collection,
+      });
+      return {
+        collection,
+        success: false,
+        count: items.length,
+        error: {
+          code: error.code,
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+        },
+      };
+    }
+
+    return { collection, success: true, count: items.length };
+  } catch (err: any) {
+    console.error(`[Supabase Sync] Exceção inesperada na coleção "${collection}":`, err);
+    return {
+      collection,
+      success: false,
+      count: items.length,
+      error: { message: err?.message || 'Erro de conexão ou exceção inesperada.' },
+    };
+  }
+}
+
+/**
+ * 1b. Sincronização de Coleções SEM key (journal, desabafos, goals, notices, events, people)
+ * Envia: id (UUID estável e reutilizado), user_id, collection, data, updated_at
+ * onConflict: 'id'
+ */
+export async function syncUnkeyedCollection(
+  userId: string,
+  collection: string,
+  items: UnkeyedSyncItem[]
+): Promise<CollectionSyncResult> {
+  if (!isSupabaseConfigured || !supabase || items.length === 0) {
+    return { collection, success: true, count: 0 };
+  }
+
+  const now = new Date().toISOString();
+  // Send id (stable UUID), user_id, collection, data, updated_at
+  const payload = items.map((it) => ({
+    id: ensureUUID(it.id),
+    user_id: userId,
+    collection,
+    data: it.data,
+    updated_at: now,
+  }));
+
+  try {
+    const { error } = await supabase
+      .from('items')
+      .upsert(payload, { onConflict: 'id' });
+
+    if (error) {
+      console.error(`[Supabase Sync] Falha na coleção sem key "${collection}":`, {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+        collection,
+      });
+      return {
+        collection,
+        success: false,
+        count: items.length,
+        error: {
+          code: error.code,
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+        },
+      };
+    }
+
+    return { collection, success: true, count: items.length };
+  } catch (err: any) {
+    console.error(`[Supabase Sync] Exceção inesperada na coleção "${collection}":`, err);
+    return {
+      collection,
+      success: false,
+      count: items.length,
+      error: { message: err?.message || 'Erro de conexão ou exceção inesperada.' },
+    };
+  }
+}
+
+/**
+ * Exclui itens por ID na tabela items
+ */
+export async function deleteItemsByIds(
+  userId: string,
+  ids: string[]
+): Promise<{ success: boolean; error?: any }> {
+  if (!isSupabaseConfigured || !supabase || ids.length === 0) {
+    return { success: true };
+  }
+
+  try {
+    const { error } = await supabase
+      .from('items')
+      .delete()
+      .in('id', ids)
+      .eq('user_id', userId);
+
+    if (error) {
+      console.error('[Supabase Sync] Erro ao deletar itens por ID:', {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+      });
+      return { success: false, error };
+    }
+    return { success: true };
+  } catch (err: any) {
+    console.error('[Supabase Sync] Exceção ao deletar itens:', err);
+    return { success: false, error: err };
+  }
+}
+
+// ==========================================
 // Offline Queue & Difference Sync
 // ==========================================
 
 export interface PendingSyncItem {
-  type: 'upsert_item' | 'delete_item' | 'update_settings';
+  type: 'upsert_item' | 'upsert_keyed_item' | 'delete_item' | 'update_settings';
   collection?: string;
   key?: string;
   id?: string;
@@ -369,19 +567,20 @@ export async function flushOfflineQueue(userId: string): Promise<boolean> {
           user_id: userId,
           data: item.data,
           updated_at: now,
-        });
+        }, { onConflict: 'user_id' });
         if (error) throw error;
-      } else if (item.type === 'upsert_item') {
-        const { error } = await supabase.from('items').upsert({
-          id: item.id,
-          user_id: userId,
-          collection: item.collection,
-          key: item.key,
-          data: item.data,
-          updated_at: now,
-        });
-        if (error) throw error;
-      } else if (item.type === 'delete_item') {
+      } else if (
+        item.type === 'upsert_keyed_item' ||
+        (item.type === 'upsert_item' && item.collection && isKeyedCollection(item.collection) && item.key)
+      ) {
+        // Group A: Keyed collection
+        const res = await syncKeyedCollection(userId, item.collection!, [{ key: item.key!, data: item.data }]);
+        if (!res.success) throw res.error;
+      } else if (item.type === 'upsert_item' && item.collection && item.id) {
+        // Group B: Unkeyed collection
+        const res = await syncUnkeyedCollection(userId, item.collection, [{ id: item.id, data: item.data }]);
+        if (!res.success) throw res.error;
+      } else if (item.type === 'delete_item' && item.id) {
         const { error } = await supabase
           .from('items')
           .delete()
@@ -389,8 +588,14 @@ export async function flushOfflineQueue(userId: string): Promise<boolean> {
           .eq('user_id', userId);
         if (error) throw error;
       }
-    } catch (err) {
-      console.warn('Falha ao descarregar item da fila:', item, err);
+    } catch (err: any) {
+      console.error('[Supabase Sync] Falha ao descarregar item da fila:', {
+        type: item.type,
+        collection: item.collection,
+        id: item.id,
+        key: item.key,
+        error: err?.message || err,
+      });
       remaining.push(item);
     }
   }
@@ -460,16 +665,25 @@ export function inspectLocalData(): LocalDataSummary {
   };
 }
 
+export interface MigrationResult {
+  success: boolean;
+  error?: string;
+  syncedCollections?: string[];
+  failedCollections?: string[];
+}
+
 export async function migrateLocalDataToCloud(
   userId: string,
   idMapping: Record<string, string> = {}
-): Promise<{ success: boolean; error?: string }> {
+): Promise<MigrationResult> {
   if (!isSupabaseConfigured || !supabase) {
     return { success: false, error: 'Supabase não conectado.' };
   }
 
   try {
     const now = new Date().toISOString();
+    const syncedCols: string[] = [];
+    const failedCols: string[] = [];
 
     // 1. Settings
     const appTitle = loadJSON<string>('atelier_app_title', 'Planner da Mulher');
@@ -516,203 +730,178 @@ export async function migrateLocalDataToCloud(
       meal,
     };
 
-    // Upsert Settings
-    const { error: settingsErr } = await supabase.from('user_settings').upsert({
-      user_id: userId,
-      data: settingsPayload,
-      updated_at: now,
-    });
+    // Upsert Settings with onConflict user_id
+    const { error: settingsErr } = await supabase.from('user_settings').upsert(
+      {
+        user_id: userId,
+        data: settingsPayload,
+        updated_at: now,
+      },
+      { onConflict: 'user_id' }
+    );
 
     if (settingsErr) {
-      console.error('Erro migrando settings:', settingsErr);
-      return { success: false, error: 'Falha ao salvar configurações na nuvem.' };
+      console.error('[Supabase Sync] Erro ao sincronizar user_settings:', settingsErr);
+      failedCols.push('configuracoes');
+    } else {
+      syncedCols.push('configuracoes');
     }
 
-    // 2. People & ID Mapping
-    const rawPeople = loadJSON<PersonProfile[]>('atelier_people', []);
-    const itemsToUpsert: CloudItemRow[] = [];
-
-    // Map 'me' explicitly to primary if needed
+    // 2. People (Group B - Unkeyed)
     idMapping['me'] = userId;
-
-    for (const p of rawPeople) {
-      const pId = ensureUUID(p.id, idMapping);
-      itemsToUpsert.push({
-        id: pId,
-        user_id: userId,
-        collection: 'people',
-        key: pId,
-        data: {
-          ...p,
+    const rawPeople = loadJSON<PersonProfile[]>('atelier_people', []);
+    if (rawPeople.length > 0) {
+      const cleanPeople: UnkeyedSyncItem[] = rawPeople.map((p) => {
+        const pId = ensureUUID(p.id, idMapping);
+        return {
           id: pId,
-        },
-        created_at: now,
-        updated_at: now,
+          data: { ...p, id: pId },
+        };
       });
+      const res = await syncUnkeyedCollection(userId, 'people', cleanPeople);
+      if (res.success) syncedCols.push('people');
+      else failedCols.push('people');
     }
 
-    // 3. Events with remapped personId
+    // 3. Events (Group B - Unkeyed)
     const rawEvents = loadJSON<CalendarEvent[]>('atelier_events', []);
-    for (const ev of rawEvents) {
-      const evId = ensureUUID(ev.id, idMapping);
-      const remappedPersonId = ev.personId ? ensureUUID(ev.personId, idMapping) : userId;
-      itemsToUpsert.push({
-        id: evId,
-        user_id: userId,
-        collection: 'events',
-        key: evId,
-        data: {
-          ...ev,
+    if (rawEvents.length > 0) {
+      const cleanEvents: UnkeyedSyncItem[] = rawEvents.map((ev) => {
+        const evId = ensureUUID(ev.id, idMapping);
+        const remappedPersonId = ev.personId ? ensureUUID(ev.personId, idMapping) : userId;
+        return {
           id: evId,
-          personId: remappedPersonId,
-        },
-        created_at: now,
-        updated_at: now,
+          data: { ...ev, id: evId, personId: remappedPersonId },
+        };
       });
+      const res = await syncUnkeyedCollection(userId, 'events', cleanEvents);
+      if (res.success) syncedCols.push('events');
+      else failedCols.push('events');
     }
 
-    // 4. Notices with remapped personId
+    // 4. Notices (Group B - Unkeyed)
     const rawNotices = loadJSON<NoticeItem[]>('atelier_notices', []);
-    for (const not of rawNotices) {
-      const notId = ensureUUID(not.id, idMapping);
-      const remappedPersonId = not.personId ? ensureUUID(not.personId, idMapping) : userId;
-      itemsToUpsert.push({
-        id: notId,
-        user_id: userId,
-        collection: 'notices',
-        key: notId,
-        data: {
-          ...not,
+    if (rawNotices.length > 0) {
+      const cleanNotices: UnkeyedSyncItem[] = rawNotices.map((not) => {
+        const notId = ensureUUID(not.id, idMapping);
+        const remappedPersonId = not.personId ? ensureUUID(not.personId, idMapping) : userId;
+        return {
           id: notId,
-          personId: remappedPersonId,
-        },
-        created_at: now,
-        updated_at: now,
+          data: { ...not, id: notId, personId: remappedPersonId },
+        };
       });
+      const res = await syncUnkeyedCollection(userId, 'notices', cleanNotices);
+      if (res.success) syncedCols.push('notices');
+      else failedCols.push('notices');
     }
 
-    // 5. Journal Entries
+    // 5. Journal Entries (Group B - Unkeyed)
     const rawJournal = loadJSON<JournalEntry[]>('atelier_journal', []);
-    for (const entry of rawJournal) {
-      const entryId = ensureUUID(entry.id, idMapping);
-      itemsToUpsert.push({
-        id: entryId,
-        user_id: userId,
-        collection: 'journal',
-        key: entryId,
-        data: {
-          ...entry,
+    if (rawJournal.length > 0) {
+      const cleanJournal: UnkeyedSyncItem[] = rawJournal.map((entry) => {
+        const entryId = ensureUUID(entry.id, idMapping);
+        return {
           id: entryId,
-        },
-        created_at: now,
-        updated_at: now,
+          data: { ...entry, id: entryId },
+        };
       });
+      const res = await syncUnkeyedCollection(userId, 'journal', cleanJournal);
+      if (res.success) syncedCols.push('journal');
+      else failedCols.push('journal');
     }
 
-    // 6. Desabafos
+    // 6. Desabafos (Group B - Unkeyed)
     const rawDesabafos = loadJSON<DesabafoEntry[]>('atelier_desabafos', []);
-    for (const d of rawDesabafos) {
-      const dId = ensureUUID(d.id, idMapping);
-      itemsToUpsert.push({
-        id: dId,
-        user_id: userId,
-        collection: 'desabafos',
-        key: dId,
-        data: {
-          ...d,
+    if (rawDesabafos.length > 0) {
+      const cleanDesabafos: UnkeyedSyncItem[] = rawDesabafos.map((d) => {
+        const dId = ensureUUID(d.id, idMapping);
+        return {
           id: dId,
-        },
-        created_at: now,
-        updated_at: now,
+          data: { ...d, id: dId },
+        };
       });
+      const res = await syncUnkeyedCollection(userId, 'desabafos', cleanDesabafos);
+      if (res.success) syncedCols.push('desabafos');
+      else failedCols.push('desabafos');
     }
 
-    // 7. Goals
+    // 7. Goals (Group B - Unkeyed)
     const rawGoals = loadJSON<Goal[]>('atelier_goals', []);
-    for (const g of rawGoals) {
-      const gId = ensureUUID(g.id, idMapping);
-      const milestones = (g.milestones || []).map((m) => ({
-        ...m,
-        id: ensureUUID(m.id, idMapping),
-      }));
-      itemsToUpsert.push({
-        id: gId,
-        user_id: userId,
-        collection: 'goals',
-        key: gId,
-        data: {
-          ...g,
+    if (rawGoals.length > 0) {
+      const cleanGoals: UnkeyedSyncItem[] = rawGoals.map((g) => {
+        const gId = ensureUUID(g.id, idMapping);
+        const milestones = (g.milestones || []).map((m) => ({
+          ...m,
+          id: ensureUUID(m.id, idMapping),
+        }));
+        return {
           id: gId,
-          milestones,
-        },
-        created_at: now,
-        updated_at: now,
+          data: { ...g, id: gId, milestones },
+        };
       });
+      const res = await syncUnkeyedCollection(userId, 'goals', cleanGoals);
+      if (res.success) syncedCols.push('goals');
+      else failedCols.push('goals');
     }
 
-    // 8. Daily Roteiros (key = 'YYYY-MM-DD')
+    // 8. Daily Roteiros (Group A - Keyed: key = 'YYYY-MM-DD', NÃO envia id)
     const rawRoteiros = loadJSON<Record<string, RoteiroItem[]>>('atelier_daily_roteiros', {});
+    const keyedRoteiros: KeyedSyncItem[] = [];
     for (const [dateKey, list] of Object.entries(rawRoteiros)) {
       if (!Array.isArray(list)) continue;
       const cleanList = list.map((item) => ({
         ...item,
         id: ensureUUID(item.id, idMapping),
       }));
-      const rowId = ensureUUID(`roteiro_${dateKey}`, idMapping);
-      itemsToUpsert.push({
-        id: rowId,
-        user_id: userId,
-        collection: 'roteiros',
+      keyedRoteiros.push({
         key: dateKey,
         data: { items: cleanList },
-        created_at: now,
-        updated_at: now,
       });
     }
+    if (keyedRoteiros.length > 0) {
+      const res = await syncKeyedCollection(userId, 'roteiros', keyedRoteiros);
+      if (res.success) syncedCols.push('roteiros');
+      else failedCols.push('roteiros');
+    }
 
-    // 9. Water per day (key = 'YYYY-MM-DD')
+    // 9. Water per day (Group A - Keyed: key = 'YYYY-MM-DD', NÃO envia id)
     const rawCups = loadJSON<Record<string, number>>('atelier_daily_cups', {});
+    const keyedWater: KeyedSyncItem[] = [];
     for (const [dateKey, count] of Object.entries(rawCups)) {
       if (typeof count !== 'number') continue;
-      const rowId = ensureUUID(`water_${dateKey}`, idMapping);
-      itemsToUpsert.push({
-        id: rowId,
-        user_id: userId,
-        collection: 'water',
+      keyedWater.push({
         key: dateKey,
         data: { cupsCount: count },
-        created_at: now,
-        updated_at: now,
       });
     }
+    if (keyedWater.length > 0) {
+      const res = await syncKeyedCollection(userId, 'water', keyedWater);
+      if (res.success) syncedCols.push('water');
+      else failedCols.push('water');
+    }
 
-    // 10. Study & Health
+    // 10. Study (Group A - Keyed: key = 'main', NÃO envia id)
     const rawStudy = loadJSON<StudyData | null>('atelier_study', null);
     if (rawStudy) {
-      const rowId = ensureUUID('study_main', idMapping);
-      itemsToUpsert.push({
-        id: rowId,
-        user_id: userId,
-        collection: 'study',
-        key: 'main',
-        data: rawStudy,
-        created_at: now,
-        updated_at: now,
-      });
+      const res = await syncKeyedCollection(userId, 'study', [{ key: 'main', data: rawStudy }]);
+      if (res.success) syncedCols.push('study');
+      else failedCols.push('study');
     }
 
-    // Chunked upsert to Supabase
-    const CHUNK_SIZE = 50;
-    for (let i = 0; i < itemsToUpsert.length; i += CHUNK_SIZE) {
-      const chunk = itemsToUpsert.slice(i, i + CHUNK_SIZE);
-      const { error } = await supabase.from('items').upsert(chunk);
-      if (error) {
-        console.error('Erro salvando lote de items:', error);
-        return { success: false, error: 'Falha ao salvar dados na nuvem.' };
-      }
+    if (failedCols.length > 0) {
+      return {
+        success: false,
+        error: `Algumas coleções falharam ao sincronizar: ${failedCols.join(', ')}`,
+        syncedCollections: syncedCols,
+        failedCollections: failedCols,
+      };
     }
 
-    return { success: true };
+    return {
+      success: true,
+      syncedCollections: syncedCols,
+      failedCollections: [],
+    };
   } catch (err: any) {
     console.error('Erro na migração:', err);
     return { success: false, error: err?.message || 'Erro inesperado na sincronização.' };
@@ -733,3 +922,4 @@ export function clearAllLocalAtelierData(): void {
   }
   keysToRemove.forEach((k) => localStorage.removeItem(k));
 }
+

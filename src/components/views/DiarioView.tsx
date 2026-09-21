@@ -12,9 +12,12 @@ import {
   Check,
   Search,
   Volume2,
+  KeyRound,
+  ShieldCheck,
 } from 'lucide-react';
 import { JournalEntry, MoodType, AppImages } from '../../types';
 import { soundEffects } from '../../utils/audio';
+import { sanitizeImageUrl } from '../../lib/security';
 
 interface DiarioViewProps {
   entries: JournalEntry[];
@@ -22,6 +25,9 @@ interface DiarioViewProps {
   onDeleteEntry: (id: string) => void;
   images: AppImages;
   onOpenImageManager: () => void;
+  isPinActive?: boolean;
+  onOpenPinSettings?: () => void;
+  onLockNow?: () => void;
 }
 
 const MOODS: { type: MoodType; label: string; icon: string }[] = [
@@ -38,6 +44,9 @@ export const DiarioView: React.FC<DiarioViewProps> = ({
   onDeleteEntry,
   images,
   onOpenImageManager,
+  isPinActive,
+  onOpenPinSettings,
+  onLockNow,
 }) => {
   const [selectedMood, setSelectedMood] = useState<MoodType>('grata');
   const [entryTitle, setEntryTitle] = useState('');
@@ -97,20 +106,42 @@ export const DiarioView: React.FC<DiarioViewProps> = ({
       <div className="relative rounded-3xl bg-white dark:bg-[#251D17] border border-[#EBDED5] dark:border-[#3D2E24] shadow-xs overflow-hidden">
         <div className="relative h-44 sm:h-52 w-full overflow-hidden">
           <img
-            src={images.journal}
+            src={sanitizeImageUrl(images.journal, 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&q=80&w=800')}
             alt="Capa do Diário da Alma"
+            referrerPolicy="no-referrer"
             className="w-full h-full object-cover"
             loading="lazy"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-[#381E10]/90 via-[#381E10]/40 to-transparent" />
 
-          <button
-            onClick={onOpenImageManager}
-            className="absolute top-3 right-3 p-2 rounded-full bg-black/40 backdrop-blur-md text-white hover:bg-black/60 transition-colors"
-            title="Alterar capa do diário"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-[#E8A5B8]" />
-          </button>
+          <div className="absolute top-3 right-3 flex items-center gap-2">
+            {isPinActive && onLockNow && (
+              <button
+                onClick={onLockNow}
+                className="p-2 rounded-full bg-black/40 backdrop-blur-md text-white hover:bg-black/60 transition-colors flex items-center gap-1.5 px-3 text-xs"
+                title="Bloquear Diário imediatamente com PIN"
+              >
+                <Lock className="w-3.5 h-3.5 text-[#E8A5B8]" />
+                <span className="hidden sm:inline">Bloquear</span>
+              </button>
+            )}
+            {onOpenPinSettings && (
+              <button
+                onClick={onOpenPinSettings}
+                className="p-2 rounded-full bg-black/40 backdrop-blur-md text-white hover:bg-black/60 transition-colors"
+                title="Configurações do PIN de privacidade"
+              >
+                <KeyRound className="w-3.5 h-3.5 text-[#E8A5B8]" />
+              </button>
+            )}
+            <button
+              onClick={onOpenImageManager}
+              className="p-2 rounded-full bg-black/40 backdrop-blur-md text-white hover:bg-black/60 transition-colors"
+              title="Alterar capa do diário"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-[#E8A5B8]" />
+            </button>
+          </div>
 
           <div className="absolute bottom-4 left-5 right-5 text-white">
             <div className="flex items-center gap-2 mb-1">

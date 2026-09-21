@@ -13,6 +13,7 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import { AppImages } from '../../types';
+import { sanitizeImageUrl, isValidImageUrl } from '../../lib/security';
 
 interface ImageManagerModalProps {
   isOpen: boolean;
@@ -97,7 +98,16 @@ export const ImageManagerModal: React.FC<ImageManagerModalProps> = ({
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
-    onUpdateImages(formData);
+    const sanitizedImages: AppImages = {
+      avatar: sanitizeImageUrl(formData.avatar, images.avatar),
+      logo: sanitizeImageUrl(formData.logo, images.logo),
+      meal: sanitizeImageUrl(formData.meal, images.meal),
+      journal: sanitizeImageUrl(formData.journal, images.journal),
+      goalsQuote: sanitizeImageUrl(formData.goalsQuote, images.goalsQuote),
+      studyDesk: sanitizeImageUrl(formData.studyDesk, images.studyDesk),
+    };
+
+    onUpdateImages(sanitizedImages);
     setSavedNotice(true);
     setTimeout(() => {
       setSavedNotice(false);
@@ -106,7 +116,8 @@ export const ImageManagerModal: React.FC<ImageManagerModalProps> = ({
   };
 
   const copyHtmlSnippet = (url: string, alt: string, key: string) => {
-    const html = `<img src="${url}" alt="${alt}" loading="lazy" />`;
+    const safeUrl = sanitizeImageUrl(url);
+    const html = `<img src="${safeUrl}" alt="${alt}" loading="lazy" referrerpolicy="no-referrer" />`;
     navigator.clipboard.writeText(html);
     setCopiedKey(key);
     setTimeout(() => setCopiedKey(null), 2000);
@@ -119,10 +130,24 @@ export const ImageManagerModal: React.FC<ImageManagerModalProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Validate image MIME type
+    if (!file.type.match(/^image\/(png|jpeg|jpg|webp|gif|svg\+xml)$/)) {
+      alert('Formato de imagem não suportado. Utilize PNG, JPEG ou WEBP.');
+      return;
+    }
+
+    // Limit image upload to 2MB
+    if (file.size > 2 * 1024 * 1024) {
+      alert('A imagem não pode ultrapassar 2MB.');
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (event) => {
       const base64 = event.target?.result as string;
-      setFormData((prev) => ({ ...prev, [key]: base64 }));
+      if (isValidImageUrl(base64)) {
+        setFormData((prev) => ({ ...prev, [key]: base64 }));
+      }
     };
     reader.readAsDataURL(file);
   };
@@ -200,10 +225,11 @@ export const ImageManagerModal: React.FC<ImageManagerModalProps> = ({
 
                   {/* Thumbnail preview */}
                   <div className="w-16 h-16 rounded-xl overflow-hidden border border-[#EBDED5] dark:border-[#3D2E24] bg-[#FAF7F2] shrink-0 shadow-sm relative group">
-                    {currentUrl ? (
+                    {currentUrl && isValidImageUrl(currentUrl) ? (
                       <img
-                        src={currentUrl}
+                        src={sanitizeImageUrl(currentUrl)}
                         alt={field.defaultAlt}
+                        referrerPolicy="no-referrer"
                         className="w-full h-full object-cover"
                         onError={(e) => {
                           (e.target as HTMLImageElement).src =

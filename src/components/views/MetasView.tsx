@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { Goal, Milestone, AppImages } from '../../types';
 import { soundEffects } from '../../utils/audio';
+import { sanitizeImageUrl } from '../../lib/security';
 
 interface MetasViewProps {
   goals: Goal[];
@@ -107,8 +108,9 @@ export const MetasView: React.FC<MetasViewProps> = ({
       <div className="relative rounded-3xl bg-white dark:bg-[#251D17] border border-[#EBDED5] dark:border-[#3D2E24] shadow-xs overflow-hidden">
         <div className="relative h-44 sm:h-52 w-full overflow-hidden">
           <img
-            src={images.goalsQuote}
+            src={sanitizeImageUrl(images.goalsQuote, 'https://images.unsplash.com/photo-1490481651871-ab68de25d43d?auto=format&fit=crop&q=80&w=800')}
             alt="Metas e Propósitos"
+            referrerPolicy="no-referrer"
             className="w-full h-full object-cover"
             loading="lazy"
           />

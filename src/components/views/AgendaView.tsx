@@ -38,6 +38,7 @@ import {
   SyncState,
 } from '../../types';
 import { soundEffects } from '../../utils/audio';
+import { sanitizeImageUrl } from '../../lib/security';
 import {
   toLocalDateKey,
   getISOWeekNumber,
@@ -700,10 +701,11 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
               }`}
               title={`Clique para filtrar ou segure/clique no lápis para editar ${person.name}`}
             >
-              {person.avatarUrl ? (
+              {person.avatarUrl && sanitizeImageUrl(person.avatarUrl) ? (
                 <img
-                  src={person.avatarUrl}
+                  src={sanitizeImageUrl(person.avatarUrl)}
                   alt={person.name}
+                  referrerPolicy="no-referrer"
                   className="w-5 h-5 rounded-full object-cover border shrink-0"
                   style={{ borderColor: person.color || '#E8A5B8' }}
                 />
@@ -796,10 +798,11 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
                     key={kid.id}
                     className="p-3 rounded-2xl bg-white/80 dark:bg-[#1E1712]/80 border border-[#E8A5B8]/40 flex items-start gap-3"
                   >
-                    {kid.avatarUrl ? (
+                    {kid.avatarUrl && sanitizeImageUrl(kid.avatarUrl) ? (
                       <img
-                        src={kid.avatarUrl}
+                        src={sanitizeImageUrl(kid.avatarUrl)}
                         alt={kid.name}
+                        referrerPolicy="no-referrer"
                         className="w-10 h-10 rounded-full object-cover border-2 shrink-0 shadow-xs"
                         style={{ borderColor: kid.color || '#E8A5B8' }}
                       />
@@ -1203,11 +1206,12 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-start gap-3">
-                    {avatar ? (
+                    {avatar && sanitizeImageUrl(avatar) ? (
                       <div className="relative shrink-0">
                         <img
-                          src={avatar}
+                          src={sanitizeImageUrl(avatar)}
                           alt={personDisplayName || 'Avatar'}
+                          referrerPolicy="no-referrer"
                           className="w-10 h-10 rounded-full object-cover border-2 shadow-xs"
                           style={{ borderColor: markerColor }}
                         />

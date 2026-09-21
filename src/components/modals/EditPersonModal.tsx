@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { PersonProfile, EventCategory } from '../../types';
 import { resizeImage } from '../../utils/imageResizer';
+import { sanitizeImageUrl, sanitizeText } from '../../lib/security';
 
 interface EditPersonModalProps {
   isOpen: boolean;
@@ -171,7 +172,7 @@ export const EditPersonModal: React.FC<EditPersonModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmedName = name.trim();
+    const trimmedName = sanitizeText(name, 80);
 
     if (!trimmedName) {
       setError('O nome da pessoa é obrigatório e não pode ficar vazio.');
@@ -190,12 +191,12 @@ export const EditPersonModal: React.FC<EditPersonModalProps> = ({
     onSavePerson({
       id: targetPersonId,
       name: trimmedName,
-      avatarUrl: avatarUrl.trim(),
+      avatarUrl: sanitizeImageUrl(avatarUrl),
       category,
       color,
       role: targetRole,
       birthDate: category === 'pequenos' && birthDate ? birthDate : undefined,
-      notes: notes.trim() || undefined,
+      notes: sanitizeText(notes, 1000) || undefined,
     });
 
     onClose();
@@ -352,10 +353,11 @@ export const EditPersonModal: React.FC<EditPersonModalProps> = ({
             {/* Avatar Preview & Upload */}
             <div className="flex items-center gap-4 p-3.5 rounded-2xl bg-white dark:bg-[#251D17] border border-[#EBDED5] dark:border-[#3D2E24]">
               <div className="relative shrink-0">
-                {avatarUrl ? (
+                {avatarUrl && sanitizeImageUrl(avatarUrl) ? (
                   <img
-                    src={avatarUrl}
+                    src={sanitizeImageUrl(avatarUrl)}
                     alt={name || 'Avatar'}
+                    referrerPolicy="no-referrer"
                     className="w-14 h-14 rounded-full object-cover border-2 shadow-xs"
                     style={{ borderColor: color }}
                   />
