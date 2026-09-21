@@ -1,0 +1,6 @@
+{
+  "name": "Atelier & Alento",
+  "description": "Planner e diário de vida, fé, rotinas e metas com estética editorial e papelaria artesanal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
