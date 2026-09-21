@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AppTab, AppImages, UserSession } from '../types';
+import { AppTab, AppImages, UserSession, SyncState } from '../types';
 import { AALogo } from './AALogo';
 import {
   Image as ImageIcon,
@@ -11,6 +11,9 @@ import {
   Check,
   User,
   Sparkles,
+  RefreshCw,
+  WifiOff,
+  AlertCircle,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -21,6 +24,7 @@ interface HeaderProps {
   isDarkMode: boolean;
   onToggleDarkMode: () => void;
   userSession: UserSession;
+  syncState?: SyncState;
   onOpenLoginModal: () => void;
   onOpenDesabafoModal: () => void;
   onOpenImageManager: () => void;
@@ -45,6 +49,7 @@ export const Header: React.FC<HeaderProps> = ({
   isDarkMode,
   onToggleDarkMode,
   userSession,
+  syncState = 'sincronizado',
   onOpenLoginModal,
   onOpenDesabafoModal,
   onOpenImageManager,
@@ -64,6 +69,38 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   const activeTabInfo = TAB_INFO[currentTab];
+
+  const getSyncStateUI = () => {
+    switch (syncState) {
+      case 'sincronizando':
+        return {
+          icon: <RefreshCw className="w-3.5 h-3.5 text-amber-500 animate-spin" />,
+          label: 'Sincronizando...',
+          style: 'bg-white dark:bg-[#251D17] text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-800',
+        };
+      case 'offline':
+        return {
+          icon: <WifiOff className="w-3.5 h-3.5 text-amber-600" />,
+          label: 'Modo Offline',
+          style: 'bg-white dark:bg-[#251D17] text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-800',
+        };
+      case 'erro':
+        return {
+          icon: <AlertCircle className="w-3.5 h-3.5 text-rose-500" />,
+          label: 'Erro ao Salvar',
+          style: 'bg-white dark:bg-[#251D17] text-rose-700 dark:text-rose-400 border-rose-300 dark:border-rose-800',
+        };
+      case 'sincronizado':
+      default:
+        return {
+          icon: <Cloud className="w-3.5 h-3.5 text-emerald-500" />,
+          label: 'Salvo na Nuvem',
+          style: 'bg-white dark:bg-[#251D17] text-emerald-700 dark:text-emerald-400 border-emerald-300 dark:border-emerald-800',
+        };
+    }
+  };
+
+  const syncUI = getSyncStateUI();
 
   return (
     <header className="sticky top-0 z-40 w-full bg-[#FAF7F2]/95 dark:bg-[#1E1712]/95 backdrop-blur-md border-b border-[#EBDED5]/80 dark:border-[#3D2E24] px-3 sm:px-6 py-2.5 transition-colors">
@@ -148,23 +185,15 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="text-[11px] font-semibold hidden min-[400px]:inline">Desabafo</span>
             </button>
 
-            {/* Login / Local Save Button */}
+            {/* Login / Cloud Sync Button */}
             <button
               onClick={onOpenLoginModal}
-              className={`flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-full text-xs font-medium border transition-all shadow-2xs ${
-                userSession.isLoggedIn
-                  ? 'bg-white dark:bg-[#251D17] text-emerald-700 dark:text-emerald-400 border-emerald-300 dark:border-emerald-800'
-                  : 'bg-white dark:bg-[#251D17] text-[#6B3F2A] dark:text-[#E8DDD4] border-[#EBDED5] dark:border-[#3D2E24]'
-              }`}
-              title={
-                userSession.isLoggedIn
-                  ? `Salvo neste aparelho ${userSession.email ? `• ${userSession.email}` : ''} (Clique para sincronizar ou exportar backup)`
-                  : 'Salvar neste aparelho e exportar backup'
-              }
+              className={`flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-full text-xs font-medium border transition-all shadow-2xs cursor-pointer ${syncUI.style}`}
+              title={`Conta: ${userSession.email || 'Conectada'} • Estado: ${syncUI.label}`}
             >
-              <Cloud className={`w-3.5 h-3.5 ${userSession.isLoggedIn ? 'text-emerald-500' : 'text-[#8C6E5E]'}`} />
+              {syncUI.icon}
               <span className="text-[11px] font-medium hidden sm:inline">
-                {userSession.isLoggedIn ? 'Salvo neste aparelho' : 'Salvar'}
+                {syncUI.label}
               </span>
             </button>
 

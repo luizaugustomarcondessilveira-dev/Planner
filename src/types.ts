@@ -166,13 +166,19 @@ export interface DayHydrationLog {
   timestamps: string[];
 }
 
+export type SyncState = 'sincronizado' | 'sincronizando' | 'offline' | 'erro';
+
 export interface UserSession {
+  id?: string;
   email: string;
   name: string;
   isLoggedIn: boolean;
   lastSyncedAt?: string;
   color?: string;
   category?: EventCategory;
+  avatarUrl?: string;
+  consentAcceptedAt?: string;
+  consentVersion?: string;
 }
 
 export interface AppImages {

@@ -23,6 +23,10 @@ import {
   UserPlus,
   CalendarDays,
   Users,
+  Cloud,
+  WifiOff,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
 import {
   CalendarEvent,
@@ -31,6 +35,7 @@ import {
   KidProfile,
   AgendaAlarmConfig,
   PersonProfile,
+  SyncState,
 } from '../../types';
 import { soundEffects } from '../../utils/audio';
 import {
@@ -66,6 +71,7 @@ interface AgendaViewProps {
   alarmConfig: AgendaAlarmConfig;
   onOpenAlarmSettings: () => void;
   onTriggerTestAlarm: () => void;
+  syncState?: SyncState;
 }
 
 const FALLBACK_PEOPLE: PersonProfile[] = [
@@ -94,6 +100,7 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
   alarmConfig,
   onOpenAlarmSettings,
   onTriggerTestAlarm,
+  syncState = 'sincronizado',
 }) => {
   const activePeople = people && people.length > 0 ? people : FALLBACK_PEOPLE;
   const todayStr = useMemo(() => toLocalDateKey(new Date()), []);
@@ -580,17 +587,61 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
 
   return (
     <div className="space-y-6 pb-24 animate-fade-in max-w-xl mx-auto">
-      {/* 1. Storage Status Badge */}
+      {/* 1. Storage & Cloud Status Badge */}
       <div className="flex items-center justify-between px-3.5 py-2 rounded-2xl bg-[#F6F3EE] dark:bg-[#251D17] border border-[#EBDED5] dark:border-[#3D2E24] text-[11px] text-[#8C6E5E] dark:text-[#B59D8F]">
         <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-emerald-500" />
-          <span className="font-semibold text-[#6B3F2A] dark:text-[#E8DDD4] tracking-wider uppercase text-[10px]">
-            Salvo neste aparelho
-          </span>
+          {syncState === 'sincronizando' ? (
+            <>
+              <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+              <span className="font-semibold text-amber-800 dark:text-amber-400 tracking-wider uppercase text-[10px]">
+                Sincronizando com Supabase...
+              </span>
+            </>
+          ) : syncState === 'offline' ? (
+            <>
+              <span className="w-2 h-2 rounded-full bg-amber-500" />
+              <span className="font-semibold text-amber-800 dark:text-amber-400 tracking-wider uppercase text-[10px]">
+                Modo Offline (Alterações Locais)
+              </span>
+            </>
+          ) : syncState === 'erro' ? (
+            <>
+              <span className="w-2 h-2 rounded-full bg-rose-500" />
+              <span className="font-semibold text-rose-700 dark:text-rose-400 tracking-wider uppercase text-[10px]">
+                Erro na Sincronização
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="font-semibold text-[#6B3F2A] dark:text-[#E8DDD4] tracking-wider uppercase text-[10px]">
+                Sincronizado no Supabase
+              </span>
+            </>
+          )}
         </div>
-        <div className="flex items-center gap-1 font-medium">
-          <HardDrive className="w-3.5 h-3.5 text-[#B88E72]" />
-          <span>Memória Local</span>
+        <div className="flex items-center gap-1 font-medium text-[11px]">
+          {syncState === 'sincronizando' ? (
+            <>
+              <RefreshCw className="w-3.5 h-3.5 text-amber-600 animate-spin" />
+              <span>Nuvem</span>
+            </>
+          ) : syncState === 'offline' ? (
+            <>
+              <WifiOff className="w-3.5 h-3.5 text-amber-600" />
+              <span>Local</span>
+            </>
+          ) : syncState === 'erro' ? (
+            <>
+              <AlertCircle className="w-3.5 h-3.5 text-rose-500" />
+              <span>Reconectar</span>
+            </>
+          ) : (
+            <>
+              <Cloud className="w-3.5 h-3.5 text-emerald-600" />
+              <span>RLS Seguro</span>
+            </>
+          )}
         </div>
       </div>
 

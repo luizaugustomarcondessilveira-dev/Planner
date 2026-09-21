@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   X,
-  Mail,
   Cloud,
   Check,
   Download,
@@ -9,17 +8,19 @@ import {
   ShieldCheck,
   LogOut,
   RefreshCw,
-  Sparkles,
+  AlertCircle,
+  WifiOff,
+  UserCheck,
 } from 'lucide-react';
-import { UserSession } from '../../types';
+import { UserSession, SyncState } from '../../types';
 
 interface LoginModalProps {
   isOpen: boolean;
   onClose: () => void;
   userSession: UserSession;
-  onLogin: (email: string, name: string) => void;
-  onLogout: () => void;
-  onManualSync: () => void;
+  syncState: SyncState;
+  onLogout: () => Promise<void>;
+  onManualSync: () => Promise<void>;
   onExportData: () => void;
   onImportData: (jsonStr: string) => void;
 }
@@ -28,38 +29,39 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   isOpen,
   onClose,
   userSession,
-  onLogin,
+  syncState,
   onLogout,
   onManualSync,
   onExportData,
   onImportData,
 }) => {
-  const [emailInput, setEmailInput] = useState(userSession.email || '');
-  const [nameInput, setNameInput] = useState(userSession.name || 'Helena');
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!emailInput.trim()) return;
-    onLogin(emailInput.trim(), nameInput.trim() || 'Helena');
-    setSyncNotice('Login realizado e progresso salvo com sucesso!');
-    setTimeout(() => {
-      setSyncNotice(null);
-      onClose();
-    }, 1200);
+  const handleSyncNow = async () => {
+    try {
+      setIsSyncing(true);
+      await onManualSync();
+      setSyncNotice('Sincronização concluída com sucesso.');
+      setTimeout(() => setSyncNotice(null), 3000);
+    } catch (err: unknown) {
+      setSyncNotice('Erro ao sincronizar. Verifique sua conexão.');
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
-  const handleSyncNow = () => {
-    setIsSyncing(true);
-    onManualSync();
-    setTimeout(() => {
-      setIsSyncing(false);
-      setSyncNotice('Todos os dados foram sincronizados e salvos com segurança.');
-      setTimeout(() => setSyncNotice(null), 3000);
-    }, 800);
+  const handleLogoutClick = async () => {
+    try {
+      setIsLoggingOut(true);
+      await onLogout();
+      onClose();
+    } catch (err) {
+      setIsLoggingOut(false);
+    }
   };
 
   const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -79,6 +81,40 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     reader.readAsText(file);
   };
 
+  const getSyncStateBadge = () => {
+    switch (syncState) {
+      case 'sincronizando':
+        return (
+          <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400 font-semibold">
+            <RefreshCw className="w-3 h-3 animate-spin" />
+            Sincronizando com a Nuvem...
+          </span>
+        );
+      case 'offline':
+        return (
+          <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400 font-semibold">
+            <WifiOff className="w-3 h-3" />
+            Offline (Alterações Locais)
+          </span>
+        );
+      case 'erro':
+        return (
+          <span className="inline-flex items-center gap-1 text-rose-600 dark:text-rose-400 font-semibold">
+            <AlertCircle className="w-3 h-3" />
+            Erro na Sincronização
+          </span>
+        );
+      case 'sincronizado':
+      default:
+        return (
+          <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400 font-semibold">
+            <Check className="w-3 h-3 text-emerald-600" />
+            Sincronizado na Nuvem
+          </span>
+        );
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#231A14]/60 backdrop-blur-sm animate-fade-in">
       <div className="relative w-full max-w-md bg-[#FAF7F2] dark:bg-[#1E1712] rounded-3xl border border-[#EBDED5] dark:border-[#3D2E24] p-6 space-y-5 shadow-2xl overflow-hidden">
@@ -90,10 +126,10 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             </div>
             <div>
               <h3 className="font-serif text-xl font-semibold text-[#452414] dark:text-[#F6F1EC]">
-                {userSession.isLoggedIn ? 'Conta & Armazenamento Local' : 'Entrar com seu E-mail'}
+                Conta & Nuvem Supabase
               </h3>
               <p className="text-xs text-[#8C6E5E] dark:text-[#B59D8F]">
-                Salve todo o seu progresso neste aparelho com segurança
+                Sincronização em tempo real e cópias de segurança
               </p>
             </div>
           </div>
@@ -112,125 +148,93 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           </div>
         )}
 
-        {/* If logged in */}
-        {userSession.isLoggedIn ? (
-          <div className="space-y-4">
-            <div className="p-4 rounded-2xl bg-white dark:bg-[#251D17] border border-[#EBDED5] dark:border-[#3D2E24] space-y-2 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[#8C6E5E] dark:text-[#B59D8F]">E-mail Conectado:</span>
-                <span className="font-semibold text-[#452414] dark:text-[#F6F1EC] font-mono">
-                  {userSession.email}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[#8C6E5E] dark:text-[#B59D8F]">Nome:</span>
+        {/* Real User Session Card */}
+        <div className="space-y-4">
+          <div className="p-4 rounded-2xl bg-white dark:bg-[#251D17] border border-[#EBDED5] dark:border-[#3D2E24] space-y-2.5 text-xs">
+            <div className="flex items-center justify-between pb-2 border-b border-[#EBDED5]/60 dark:border-[#3D2E24]/60">
+              <div className="flex items-center gap-2">
+                <UserCheck className="w-4 h-4 text-emerald-600" />
                 <span className="font-semibold text-[#452414] dark:text-[#F6F1EC]">
-                  {userSession.name}
+                  {userSession.name || 'Conta Google Conectada'}
                 </span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[#8C6E5E] dark:text-[#B59D8F]">Último Salvamento:</span>
-                <span className="font-medium text-emerald-700 dark:text-emerald-400">
-                  {userSession.lastSyncedAt || 'Hoje'}
-                </span>
-              </div>
-            </div>
-
-            {/* Sync Now Action */}
-            <button
-              onClick={handleSyncNow}
-              disabled={isSyncing}
-              className="w-full py-3 px-4 rounded-2xl bg-[#502916] hover:bg-[#6B3F2A] text-white text-xs font-semibold flex items-center justify-center gap-2 shadow-xs transition-all"
-            >
-              <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
-              <span>{isSyncing ? 'Sincronizando...' : 'Salvar Todo o Progresso Agora'}</span>
-            </button>
-
-            {/* Backup Export / Import */}
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              <button
-                type="button"
-                onClick={onExportData}
-                className="py-2.5 px-3 rounded-2xl bg-white dark:bg-[#251D17] border border-[#EBDED5] dark:border-[#3D2E24] hover:border-[#B88E72] text-xs font-medium text-[#6B3F2A] dark:text-[#E8DDD4] flex items-center justify-center gap-1.5 transition-colors"
-                title="Baixar arquivo de backup do seu app"
-              >
-                <Download className="w-3.5 h-3.5 text-[#B88E72]" />
-                <span>Exportar Backup</span>
-              </button>
-
-              <label className="py-2.5 px-3 rounded-2xl bg-white dark:bg-[#251D17] border border-[#EBDED5] dark:border-[#3D2E24] hover:border-[#B88E72] text-xs font-medium text-[#6B3F2A] dark:text-[#E8DDD4] flex items-center justify-center gap-1.5 transition-colors cursor-pointer text-center">
-                <Upload className="w-3.5 h-3.5 text-[#B88E72]" />
-                <span>Restaurar</span>
-                <input
-                  type="file"
-                  accept=".json"
-                  onChange={handleFileImport}
-                  className="hidden"
-                />
-              </label>
-            </div>
-
-            {/* Logout button */}
-            <div className="pt-2 flex justify-between items-center text-xs">
-              <span className="text-[#8C6E5E] dark:text-[#B59D8F] flex items-center gap-1">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                Seus dados salvos localmente
+              <span className="px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 font-medium text-[10px] border border-emerald-200 dark:border-emerald-800">
+                Ativo
               </span>
-              <button
-                onClick={onLogout}
-                className="text-[#8C6E5E] hover:text-red-600 flex items-center gap-1 transition-colors"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span>Trocar E-mail</span>
-              </button>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-[#8C6E5E] dark:text-[#B59D8F]">E-mail:</span>
+              <span className="font-semibold text-[#452414] dark:text-[#F6F1EC] font-mono text-[11px] truncate max-w-[200px]">
+                {userSession.email}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-[#8C6E5E] dark:text-[#B59D8F]">Estado Atual:</span>
+              <div className="text-right">{getSyncStateBadge()}</div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-[#8C6E5E] dark:text-[#B59D8F]">Última Sincronização:</span>
+              <span className="font-mono text-[11px] text-[#6B3F2A] dark:text-[#D8BDB0]">
+                {userSession.lastSyncedAt || 'Recentemente'}
+              </span>
             </div>
           </div>
-        ) : (
-          /* Form to login */
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-xs font-semibold text-[#452414] dark:text-[#F6F1EC] mb-1">
-                Seu Nome ou Apelido
-              </label>
-              <input
-                type="text"
-                value={nameInput}
-                onChange={(e) => setNameInput(e.target.value)}
-                placeholder="Ex: Helena"
-                className="w-full px-3.5 py-2.5 text-xs rounded-xl bg-white dark:bg-[#251D17] border border-[#EBDED5] dark:border-[#3D2E24] text-[#452414] dark:text-[#F6F1EC] focus:outline-none focus:border-[#6B3F2A]"
-                required
-              />
-            </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-[#452414] dark:text-[#F6F1EC] mb-1">
-                Seu E-mail
-              </label>
-              <div className="relative">
-                <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8C6E5E]" />
-                <input
-                  type="email"
-                  value={emailInput}
-                  onChange={(e) => setEmailInput(e.target.value)}
-                  placeholder="exemplo@email.com"
-                  className="w-full pl-10 pr-3.5 py-2.5 text-xs rounded-xl bg-white dark:bg-[#251D17] border border-[#EBDED5] dark:border-[#3D2E24] text-[#452414] dark:text-[#F6F1EC] focus:outline-none focus:border-[#6B3F2A]"
-                  required
-                />
-              </div>
-              <p className="text-[11px] text-[#8C6E5E] dark:text-[#B59D8F] mt-1">
-                Ao entrar, seu progresso fica vinculado a este e-mail no navegador.
-              </p>
-            </div>
+          {/* Sync Now Action */}
+          <button
+            type="button"
+            onClick={handleSyncNow}
+            disabled={isSyncing || syncState === 'offline'}
+            className="w-full py-3 px-4 rounded-2xl bg-[#502916] hover:bg-[#6B3F2A] disabled:opacity-50 text-white text-xs font-semibold flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer"
+          >
+            <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
+            <span>{isSyncing ? 'Sincronizando...' : 'Sincronizar Agora com Supabase'}</span>
+          </button>
 
+          {/* Backup Export / Import */}
+          <div className="grid grid-cols-2 gap-2 pt-1">
             <button
-              type="submit"
-              className="w-full py-3 px-4 rounded-2xl bg-[#502916] hover:bg-[#6B3F2A] text-white text-xs font-semibold flex items-center justify-center gap-2 shadow-xs transition-all"
+              type="button"
+              onClick={onExportData}
+              className="py-2.5 px-3 rounded-2xl bg-white dark:bg-[#251D17] border border-[#EBDED5] dark:border-[#3D2E24] hover:border-[#B88E72] text-xs font-medium text-[#6B3F2A] dark:text-[#E8DDD4] flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              title="Baixar cópia local em arquivo JSON"
             >
-              <Sparkles className="w-4 h-4 text-[#E8A5B8]" />
-              <span>Conectar e Salvar Progresso</span>
+              <Download className="w-3.5 h-3.5 text-[#B88E72]" />
+              <span>Exportar Backup</span>
             </button>
-          </form>
-        )}
+
+            <label className="py-2.5 px-3 rounded-2xl bg-white dark:bg-[#251D17] border border-[#EBDED5] dark:border-[#3D2E24] hover:border-[#B88E72] text-xs font-medium text-[#6B3F2A] dark:text-[#E8DDD4] flex items-center justify-center gap-1.5 transition-colors cursor-pointer text-center">
+              <Upload className="w-3.5 h-3.5 text-[#B88E72]" />
+              <span>Restaurar</span>
+              <input
+                type="file"
+                accept=".json"
+                onChange={handleFileImport}
+                className="hidden"
+              />
+            </label>
+          </div>
+
+          {/* Logout button */}
+          <div className="pt-2 flex justify-between items-center text-xs">
+            <span className="text-[#8C6E5E] dark:text-[#B59D8F] flex items-center gap-1">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+              Protegido via RLS
+            </span>
+            <button
+              type="button"
+              onClick={handleLogoutClick}
+              disabled={isLoggingOut}
+              className="text-[#8C6E5E] hover:text-rose-600 flex items-center gap-1 transition-colors cursor-pointer font-medium disabled:opacity-50"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>{isLoggingOut ? 'Saindo...' : 'Sair da Conta'}</span>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

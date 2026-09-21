@@ -15,6 +15,10 @@ import { LoginModal } from './components/modals/LoginModal';
 import { AppointmentAlarmPopup } from './components/modals/AppointmentAlarmPopup';
 import { AlarmSettingsModal } from './components/modals/AlarmSettingsModal';
 import { KidsManagerModal } from './components/modals/KidsManagerModal';
+import { AuthWelcomeView } from './components/auth/AuthWelcomeView';
+import { PrivacyConsentModal } from './components/auth/PrivacyConsentModal';
+import { AALogo } from './components/AALogo';
+import { supabase, isSupabaseConfigured } from './lib/supabase';
 
 import {
   AppTab,
@@ -34,6 +38,7 @@ import {
   PersonProfile,
   StudyData,
   EventCategory,
+  SyncState,
 } from './types';
 import { loadJSON, saveJSON } from './utils/storage';
 import { toLocalDateKey } from './utils/date';
@@ -297,17 +302,22 @@ export function App() {
     return loadJSON<boolean>('atelier_user_photo_logo', false);
   });
 
-  // User Session (no hardcoded email)
+  // User Session (managed with real Supabase Auth)
   const [userSession, setUserSession] = useState<UserSession>(() => {
     return loadJSON<UserSession>('atelier_user_session', {
       email: '',
       name: 'Helena',
-      isLoggedIn: true,
-      lastSyncedAt:
-        'Hoje às ' +
-        new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+      isLoggedIn: false,
     });
   });
+
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
+  const [authErrorMessage, setAuthErrorMessage] = useState<string | null>(null);
+  const [needsPrivacyConsent, setNeedsPrivacyConsent] = useState<boolean>(false);
+  const [isSubmittingConsent, setIsSubmittingConsent] = useState<boolean>(false);
+  const [syncState, setSyncState] = useState<SyncState>(() =>
+    typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'sincronizado'
+  );
 
   // Selected Date for HojeView navigation
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
@@ -637,6 +647,149 @@ export function App() {
     const interval = setInterval(checkAlarms, 10000);
     return () => clearInterval(interval);
   }, [events, notices, alarmConfig]);
+
+  // Listen to network status (Online / Offline)
+  useEffect(() => {
+    const handleOnline = () => setSyncState('sincronizado');
+    const handleOffline = () => setSyncState('offline');
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Supabase Auth session & onAuthStateChange listener
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) {
+      setIsAuthLoading(false);
+      return;
+    }
+
+    let isMounted = true;
+
+    const handleSession = async (session: any) => {
+      if (!isMounted) return;
+      if (session?.user) {
+        const user = session.user;
+        const email = user.email || '';
+        const rawName =
+          user.user_metadata?.full_name ||
+          user.user_metadata?.name ||
+          (email ? email.split('@')[0] : 'Helena');
+
+        try {
+          // Check profile for consent and profile identity
+          const { data: profile, error } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', user.id)
+            .maybeSingle();
+
+          if (error) {
+            console.warn('Profile query warning:', error.message);
+          }
+
+          if (!profile || !profile.consent_accepted_at) {
+            if (isMounted) setNeedsPrivacyConsent(true);
+          } else {
+            if (isMounted) setNeedsPrivacyConsent(false);
+          }
+
+          if (isMounted) {
+            setUserSession({
+              id: user.id,
+              email,
+              name: profile?.display_name || rawName,
+              color: profile?.color || '#6B3F2A',
+              category: (profile?.category as EventCategory) || 'pessoal',
+              avatarUrl: profile?.avatar_thumb || user.user_metadata?.avatar_url || '',
+              consentAcceptedAt: profile?.consent_accepted_at,
+              consentVersion: profile?.consent_version,
+              isLoggedIn: true,
+              lastSyncedAt:
+                'Hoje às ' +
+                new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+            });
+
+            if (profile?.avatar_thumb) {
+              setImages((prev) => ({ ...prev, avatar: profile.avatar_thumb }));
+            }
+            setAuthErrorMessage(null);
+            setSyncState('sincronizado');
+          }
+        } catch (e) {
+          console.error('Error loading user profile:', e);
+          if (isMounted) {
+            setUserSession({
+              id: user.id,
+              email,
+              name: rawName,
+              isLoggedIn: true,
+              lastSyncedAt:
+                'Hoje às ' +
+                new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+            });
+          }
+        }
+      } else {
+        if (isMounted) {
+          setUserSession({
+            email: '',
+            name: 'Helena',
+            isLoggedIn: false,
+          });
+          setNeedsPrivacyConsent(false);
+        }
+      }
+
+      if (isMounted) {
+        setIsAuthLoading(false);
+      }
+    };
+
+    // Initial getSession check
+    supabase.auth.getSession().then(({ data: { session }, error }) => {
+      if (error) {
+        console.warn('Supabase getSession error:', error.message);
+        if (isMounted) {
+          setAuthErrorMessage('Sua sessão expirou. Faça login com o Google para continuar.');
+          setIsAuthLoading(false);
+        }
+      } else {
+        handleSession(session);
+      }
+    });
+
+    // Subscribe to auth state transitions
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_OUT') {
+        if (isMounted) {
+          setUserSession({
+            email: '',
+            name: 'Helena',
+            isLoggedIn: false,
+          });
+          setNeedsPrivacyConsent(false);
+          setIsAuthLoading(false);
+        }
+      } else if (
+        event === 'SIGNED_IN' ||
+        event === 'TOKEN_REFRESHED' ||
+        event === 'USER_UPDATED'
+      ) {
+        handleSession(session);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
 
   // Sync Dark Mode with DOM
   useEffect(() => {
@@ -1058,33 +1211,121 @@ export function App() {
     setGoals((prev) => prev.filter((g) => g.id !== goalId));
   };
 
-  // Login & Cloud Save Handlers
-  const handleLogin = (email: string, name: string) => {
-    setUserSession({
-      email,
-      name,
-      isLoggedIn: true,
-      lastSyncedAt:
-        'Hoje às ' +
-        new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+  // Real Supabase Google Login Handler
+  const handleLoginWithGoogle = async () => {
+    if (!isSupabaseConfigured || !supabase) {
+      setAuthErrorMessage(
+        'Configuração do Supabase ausente. Defina as variáveis de ambiente VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.'
+      );
+      return;
+    }
+    setAuthErrorMessage(null);
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: window.location.origin,
+      },
     });
+    if (error) {
+      setAuthErrorMessage(error.message);
+      throw error;
+    }
   };
 
-  const handleLogout = () => {
-    setUserSession({
-      email: '',
-      name: 'Helena',
-      isLoggedIn: false,
-    });
+  // Real Privacy Consent Acceptance Handler
+  const handleAcceptPrivacyConsent = async () => {
+    if (!userSession.id || !supabase) return;
+    setIsSubmittingConsent(true);
+    const now = new Date().toISOString();
+    try {
+      const { error } = await supabase.from('profiles').upsert({
+        id: userSession.id,
+        display_name: userSession.name || 'Helena',
+        color: userSession.color || '#6B3F2A',
+        category: userSession.category || 'pessoal',
+        avatar_thumb: images.avatar || userSession.avatarUrl || null,
+        consent_accepted_at: now,
+        consent_version: '1.0',
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setUserSession((prev) => ({
+        ...prev,
+        consentAcceptedAt: now,
+        consentVersion: '1.0',
+      }));
+      setNeedsPrivacyConsent(false);
+    } catch (err: unknown) {
+      console.error('Consent error:', err);
+      throw err;
+    } finally {
+      setIsSubmittingConsent(false);
+    }
   };
 
-  const handleManualSync = () => {
-    setUserSession((prev) => ({
-      ...prev,
-      lastSyncedAt:
-        'Hoje às ' +
-        new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-    }));
+  // Real Logout Handler (cleans localStorage atelier_* keys and signs out)
+  const handleRealLogout = async () => {
+    try {
+      setSyncState('sincronizando');
+      if (supabase) {
+        supabase.removeAllChannels();
+        await supabase.auth.signOut();
+      }
+    } catch (err) {
+      console.warn('SignOut warning:', err);
+    } finally {
+      try {
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith('atelier_')) {
+            keysToRemove.push(key);
+          }
+        }
+        keysToRemove.forEach((k) => localStorage.removeItem(k));
+      } catch (e) {
+        console.warn('Failed clearing storage:', e);
+      }
+
+      setUserSession({
+        email: '',
+        name: 'Helena',
+        isLoggedIn: false,
+      });
+      setNeedsPrivacyConsent(false);
+      setSyncState('sincronizado');
+    }
+  };
+
+  // Manual Sync Handler with Supabase
+  const handleManualSync = async () => {
+    setSyncState('sincronizando');
+    try {
+      if (userSession.id && supabase) {
+        await supabase.from('profiles').upsert({
+          id: userSession.id,
+          display_name: userSession.name || 'Helena',
+          color: userSession.color || '#6B3F2A',
+          category: userSession.category || 'pessoal',
+          avatar_thumb: images.avatar || null,
+          consent_accepted_at: userSession.consentAcceptedAt || new Date().toISOString(),
+          consent_version: userSession.consentVersion || '1.0',
+        });
+      }
+      setUserSession((prev) => ({
+        ...prev,
+        lastSyncedAt:
+          'Hoje às ' +
+          new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+      }));
+      setSyncState('sincronizado');
+    } catch (err) {
+      setSyncState('erro');
+      throw err;
+    }
   };
 
   // Export full JSON backup
@@ -1257,6 +1498,34 @@ export function App() {
     });
   };
 
+  // If authentication is being resolved
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-[#FAF7F2] dark:bg-[#1E1712] flex flex-col items-center justify-center p-6 text-center">
+        <div className="p-2 rounded-full ring-4 ring-[#E8A5B8]/30 animate-pulse mb-4">
+          <AALogo size={56} />
+        </div>
+        <h2 className="font-serif text-xl font-semibold text-[#452414] dark:text-[#F6F1EC]">
+          Atelier & Alento
+        </h2>
+        <p className="text-xs text-[#8C6E5E] dark:text-[#B59D8F] mt-1">
+          Verificando acesso seguro...
+        </p>
+      </div>
+    );
+  }
+
+  // If user is not authenticated, show strictly the Google OAuth Welcome View (no planner data exposed)
+  if (!userSession.isLoggedIn) {
+    return (
+      <AuthWelcomeView
+        onLoginWithGoogle={handleLoginWithGoogle}
+        isLoading={isAuthLoading}
+        errorMessage={authErrorMessage}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#FAF7F2] dark:bg-[#1A140F] text-[#452414] dark:text-[#F6F1EC] transition-colors flex flex-col font-sans selection:bg-[#E8A5B8] selection:text-[#452414]">
       {/* 1. Header with active tab indicator, customizable title, logo toggle, dark mode, login, and desabafo trigger */}
@@ -1268,6 +1537,7 @@ export function App() {
         isDarkMode={isDarkMode}
         onToggleDarkMode={() => setIsDarkMode((prev) => !prev)}
         userSession={userSession}
+        syncState={syncState}
         onOpenLoginModal={() => setIsLoginModalOpen(true)}
         onOpenDesabafoModal={() => setIsDesabafoOpen(true)}
         onOpenImageManager={() => setIsImageManagerOpen(true)}
@@ -1330,6 +1600,7 @@ export function App() {
             alarmConfig={alarmConfig}
             onOpenAlarmSettings={() => setIsAlarmSettingsOpen(true)}
             onTriggerTestAlarm={handleTriggerTestAlarm}
+            syncState={syncState}
           />
         )}
 
@@ -1415,12 +1686,21 @@ export function App() {
         isOpen={isLoginModalOpen}
         onClose={() => setIsLoginModalOpen(false)}
         userSession={userSession}
-        onLogin={handleLogin}
-        onLogout={handleLogout}
+        syncState={syncState}
+        onLogout={handleRealLogout}
         onManualSync={handleManualSync}
         onExportData={handleExportData}
         onImportData={handleImportData}
       />
+
+      {/* Mandatory First-access Privacy Consent Modal */}
+      {needsPrivacyConsent && (
+        <PrivacyConsentModal
+          userName={userSession.name}
+          onAcceptConsent={handleAcceptPrivacyConsent}
+          isSubmitting={isSubmittingConsent}
+        />
+      )}
 
       {/* Mobile-friendly Pop-up de Despertador de Compromisso */}
       {activeAlarm && (
